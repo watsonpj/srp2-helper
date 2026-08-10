@@ -182,7 +182,7 @@ function renderRoster() {
       </div>
       <div>
         <div class="rname">${escapeHtml(name)}</div>
-        <div class="rmeta">${escapeHtml(loc)} · <span class="status-pill ${statusClass}">${escapeHtml(status)}</span></div>
+        <div class="rmeta">${escapeHtml(loc)} · <span class="status-pill ${statusClass}">${escapeHtml(status)}</span> · ${escapeHtml(c['Equipped weapon'] || 'None')}</div>
       </div>
       <div class="rhp">${escapeHtml(c['Current HP'] ?? '')}/${escapeHtml(c['Max HP'] ?? '')}</div>
     `;
@@ -342,17 +342,6 @@ function renderActionDetail() {
   const attacker = state.characters[state.attackerIdx];
   const target = state.characters[state.targetIdx];
 
-  // Transform is a single item name (may itself contain a comma, e.g. "Kusarigama, Sickle")
-  // representing what the attacker's weapon becomes after using this action — not a list
-  // of acceptable weapons. If the attacker is already holding that exact item, using the
-  // action again would be a no-op, so we just flag it rather than blocking anything.
-  let warn = '';
-  if (a.transform && attacker) {
-    const current = (attacker['Equipped weapon'] || '').trim().toLowerCase();
-    if (current === a.transform.trim().toLowerCase()) {
-      warn = `<div class="warn-line">Attacker's weapon is already "${escapeHtml(a.transform)}" — using this action will leave it unchanged.</div>`;
-    }
-  }
   const needsAttacker = a.type !== 'Miscellaneous';
   const needsTarget = a.type !== 'Miscellaneous';
 
@@ -366,7 +355,7 @@ function renderActionDetail() {
       ${a.trigger ? `<span class="meta-tag">Target: ${escapeHtml(a.trigger)}</span>` : ''}
       ${a.transform ? `<span class="meta-tag">Weapon becomes: ${escapeHtml(a.transform)}</span>` : ''}
     </div>
-    ${warn}
+    ${a.transform && attacker ? `<div class="warn-line" style="color:var(--text-muted);border-color:var(--border-soft);background:transparent;">Attacker's weapon right now: <strong>${escapeHtml(attacker['Equipped weapon'] || 'None')}</strong></div>` : ''}
     ${a.notes ? `<div class="desc" style="opacity:.75;"><em>${escapeHtml(a.notes)}</em></div>` : ''}
     <div class="roll-cta">
       <button class="primary" id="roll-btn" ${(needsAttacker && !attacker) || (needsTarget && !target) ? 'disabled' : ''}>
@@ -389,11 +378,15 @@ function rollDie(min, max) {
 // If the action has a Transform value, the attacker's equipped weapon becomes that
 // exact item (e.g. Chain Lash -> "Kusarigama, Sickle", Sickle Slash -> "Kusarigama, Chain").
 // Transform is a single item name, even when it contains a comma — never split it.
+// This is applied unconditionally, purely as an outcome of using the action — there is
+// no "required weapon" check anywhere; you're choosing the action yourself.
 function applyTransform(a, attacker) {
   if (!a.transform || !attacker) return null;
   const prev = attacker['Equipped weapon'] || 'None';
-  if (prev.trim().toLowerCase() === a.transform.trim().toLowerCase()) return null; // already there
   attacker['Equipped weapon'] = a.transform;
+  if (prev.trim().toLowerCase() === a.transform.trim().toLowerCase()) {
+    return `${attacker['Name']}'s weapon stays "${a.transform}".`;
+  }
   return `${attacker['Name']}'s weapon changes from "${prev}" to "${a.transform}".`;
 }
 
@@ -414,7 +407,7 @@ function performAction(a) {
       resultLine: a.type === 'StatusClear' ? 'Status effects cleared.' : 'No roll — narrative action.',
       note: [a.effect ? `Effect: ${a.effect}` : '', transformNote].filter(Boolean).join(' — '),
     });
-    if (transformNote) { renderRoster(); renderDetail(); renderActionDetail(); }
+    if (a.transform) { renderRoster(); renderDetail(); renderActionDetail(); }
     return;
   }
 
