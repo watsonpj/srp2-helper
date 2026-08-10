@@ -349,6 +349,46 @@
   .ledger-result.heal{color:var(--green);}
   .ledger-note{font-size:11.5px;color:var(--gold);margin-top:4px;}
 
+  .ledger-actions{margin-top:8px;display:flex;justify-content:flex-end;}
+  .copy-btn{
+    font-family:'JetBrains Mono',monospace;
+    font-size:10.5px;
+    padding:4px 9px;
+    background:transparent;
+    border:1px solid var(--border);
+    color:var(--text-muted);
+  }
+  .copy-btn:hover{border-color:var(--gold-dim);color:var(--text);background:var(--surface-3);}
+  .copy-btn.copied{border-color:var(--green);color:var(--green);}
+  .bbcode-preview{
+    display:none;
+    position:relative;
+    margin:8px 0 0 0;
+    padding:10px 30px 10px 12px;
+    background:var(--bg);
+    border:1px dashed var(--border);
+    border-radius:var(--radius);
+    font-family:'JetBrains Mono',monospace;
+    font-size:11px;
+    line-height:1.6;
+    color:var(--text-muted);
+    white-space:pre-wrap;
+    word-break:break-word;
+  }
+  .bbcode-preview.show{display:block;}
+  .preview-close{
+    position:absolute;
+    top:4px;
+    right:4px;
+    background:transparent;
+    border:none;
+    color:var(--text-dim);
+    font-size:14px;
+    line-height:1;
+    padding:2px 6px;
+  }
+  .preview-close:hover{color:var(--text);}
+
   .ticket-edge{
     height:8px;
     background:repeating-linear-gradient(90deg, var(--bg) 0 6px, var(--surface) 6px 12px);

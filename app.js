@@ -402,7 +402,9 @@ function performAction(a) {
     const transformNote = applyTransform(a, attacker);
     addLogEntry({
       cls: 'info',
-      title: `${attacker ? attacker['Name'] : '—'} uses ${a.name}${target ? ' on ' + target['Name'] : ''}`,
+      atk: attacker ? attacker['Name'] : '—',
+      action: a.name,
+      tgt: target ? target['Name'] : null,
       rollLine: '',
       resultLine: a.type === 'StatusClear' ? 'Status effects cleared.' : 'No roll — narrative action.',
       note: [a.effect ? `Effect: ${a.effect}` : '', transformNote].filter(Boolean).join(' — '),
@@ -466,7 +468,9 @@ function performAction(a) {
 
   addLogEntry({
     cls,
-    title: `${attacker ? attacker['Name'] : '—'} uses ${a.name} on ${target ? target['Name'] : '—'}`,
+    atk: attacker ? attacker['Name'] : '—',
+    action: a.name,
+    tgt: target ? target['Name'] : '—',
     rollLine: count > 0 ? `${count}× [${min}–${max}] → [${rolls.join(', ')}] = ${rollSum}   ${isHeal ? '' : `(+${atkBonus} ATK ${punishArmour ? '+' : '−'}${defBonus} DEF)`}` : 'No dice — flat effect.',
     resultLine,
     note: [note, effectNote, transformNote].filter(Boolean).join(' — '),
@@ -478,14 +482,56 @@ function performAction(a) {
 }
 
 function addLogEntry(entry) {
-  state.log.push({ ...entry, turn: state.turn, ts: new Date() });
+  const atk = entry.atk || '—';
+  const action = entry.action || '';
+  const tgt = entry.tgt;
+  const title = `${atk} uses ${action}${tgt ? ' on ' + tgt : ''}`;
+  const bbTitle = `[b]${atk}[/b] uses [b]${action}[/b]${tgt ? ' on [b]' + tgt + '[/b]' : ''}`;
+  state.logIdCounter = (state.logIdCounter || 0) + 1;
+  state.log.push({ ...entry, title, bbTitle, id: state.logIdCounter, turn: state.turn, ts: new Date() });
   renderLedger();
+}
+
+// Builds a BBCode block (for XenForo-style forums) from a ledger entry:
+// bold names/action on the title line, the dice breakdown shrunk and muted,
+// the result bolded and colour-coded (green for heals, red for damage),
+// and any note in italics.
+function toBBCode(e) {
+  const lines = [e.bbTitle];
+  if (e.rollLine) {
+    lines.push(`[size=1][color=#8b8f9c]${e.rollLine}[/color][/size]`);
+  }
+  if (e.resultLine) {
+    const color = e.cls === 'heal' ? '#2e7d4f' : (e.cls === 'dmg' ? '#b0362b' : null);
+    lines.push(color ? `[b][color=${color}]${e.resultLine}[/color][/b]` : `[b]${e.resultLine}[/b]`);
+  }
+  if (e.note) lines.push(`[i]${e.note}[/i]`);
+  return lines.join('\n');
+}
+
+function copyText(text) {
+  if (navigator.clipboard && navigator.clipboard.writeText) {
+    return navigator.clipboard.writeText(text).catch(() => fallbackCopy(text));
+  }
+  fallbackCopy(text);
+  return Promise.resolve();
+}
+
+function fallbackCopy(text) {
+  const ta = document.createElement('textarea');
+  ta.value = text;
+  ta.style.position = 'fixed';
+  ta.style.left = '-9999px';
+  document.body.appendChild(ta);
+  ta.select();
+  try { document.execCommand('copy'); } catch (e) { /* no-op */ }
+  document.body.removeChild(ta);
 }
 
 function renderLedger() {
   const body = document.getElementById('ledger-body');
   if (!state.log.length) {
-    body.innerHTML = '<div class="empty-state">Rolls you make will appear here, most recent first.</div>';
+    body.innerHTML = '<div class="empty-state">Rolls you make will appear here, most recent first. Click any entry\'s "Copy for forum" button to grab a BBCode version for XenForo.</div>';
     return;
   }
   body.innerHTML = '';
@@ -501,10 +547,47 @@ function renderLedger() {
       ${e.rollLine ? `<div class="ledger-roll">${escapeHtml(e.rollLine)}</div>` : ''}
       <div class="ledger-result ${e.cls}">${escapeHtml(e.resultLine)}</div>
       ${e.note ? `<div class="ledger-note">${escapeHtml(e.note)}</div>` : ''}
+      <div class="ledger-actions">
+        <button class="copy-btn" type="button" data-id="${e.id}">Copy for forum</button>
+      </div>
+      <pre class="bbcode-preview"><button class="preview-close" type="button" title="Hide">×</button></pre>
     `;
     body.appendChild(div);
   });
 }
+
+document.getElementById('ledger-body').addEventListener('click', (ev) => {
+  const closeBtn = ev.target.closest('.preview-close');
+  if (closeBtn) {
+    closeBtn.closest('.bbcode-preview').classList.remove('show');
+    return;
+  }
+  const btn = ev.target.closest('.copy-btn');
+  if (!btn) return;
+  const id = Number(btn.dataset.id);
+  const entry = state.log.find(x => x.id === id);
+  if (!entry) return;
+  const text = toBBCode(entry);
+  copyText(text);
+  const entryEl = btn.closest('.ledger-entry');
+  const preview = entryEl.querySelector('.bbcode-preview');
+  preview.textContent = text;
+  const closeEl = document.createElement('button');
+  closeEl.className = 'preview-close';
+  closeEl.type = 'button';
+  closeEl.title = 'Hide';
+  closeEl.textContent = '×';
+  preview.appendChild(closeEl);
+  preview.classList.add('show');
+  const original = btn.textContent;
+  btn.textContent = 'Copied!';
+  btn.classList.add('copied');
+  clearTimeout(btn._resetTimer);
+  btn._resetTimer = setTimeout(() => {
+    btn.textContent = original;
+    btn.classList.remove('copied');
+  }, 1400);
+});
 
 // ---------- Utility ----------
 function escapeHtml(s) {
