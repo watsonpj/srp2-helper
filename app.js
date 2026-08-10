@@ -342,12 +342,15 @@ function renderActionDetail() {
   const attacker = state.characters[state.attackerIdx];
   const target = state.characters[state.targetIdx];
 
+  // Transform is a single item name (may itself contain a comma, e.g. "Kusarigama, Sickle")
+  // representing what the attacker's weapon becomes after using this action — not a list
+  // of acceptable weapons. If the attacker is already holding that exact item, using the
+  // action again would be a no-op, so we just flag it rather than blocking anything.
   let warn = '';
-  if (a.transform) {
-    const allowed = a.transform.split(',').map(s => s.trim().toLowerCase());
-    const weapon = attacker ? (attacker['Equipped weapon'] || '').toLowerCase() : '';
-    if (attacker && !allowed.includes(weapon)) {
-      warn = `<div class="warn-line">Requires equipped weapon: ${escapeHtml(a.transform)}. Attacker currently has "${escapeHtml(attacker['Equipped weapon'] || 'None')}".</div>`;
+  if (a.transform && attacker) {
+    const current = (attacker['Equipped weapon'] || '').trim().toLowerCase();
+    if (current === a.transform.trim().toLowerCase()) {
+      warn = `<div class="warn-line">Attacker's weapon is already "${escapeHtml(a.transform)}" — using this action will leave it unchanged.</div>`;
     }
   }
   const needsAttacker = a.type !== 'Miscellaneous';
@@ -361,7 +364,7 @@ function renderActionDetail() {
       <span class="meta-tag">${escapeHtml(a.type)}</span>
       ${a.effect ? `<span class="meta-tag">Effect: ${escapeHtml(a.effect)}</span>` : ''}
       ${a.trigger ? `<span class="meta-tag">Target: ${escapeHtml(a.trigger)}</span>` : ''}
-      ${a.transform ? `<span class="meta-tag">Needs: ${escapeHtml(a.transform)}</span>` : ''}
+      ${a.transform ? `<span class="meta-tag">Weapon becomes: ${escapeHtml(a.transform)}</span>` : ''}
     </div>
     ${warn}
     ${a.notes ? `<div class="desc" style="opacity:.75;"><em>${escapeHtml(a.notes)}</em></div>` : ''}
@@ -383,6 +386,17 @@ function rollDie(min, max) {
   return Math.floor(Math.random() * (max - min + 1)) + min;
 }
 
+// If the action has a Transform value, the attacker's equipped weapon becomes that
+// exact item (e.g. Chain Lash -> "Kusarigama, Sickle", Sickle Slash -> "Kusarigama, Chain").
+// Transform is a single item name, even when it contains a comma — never split it.
+function applyTransform(a, attacker) {
+  if (!a.transform || !attacker) return null;
+  const prev = attacker['Equipped weapon'] || 'None';
+  if (prev.trim().toLowerCase() === a.transform.trim().toLowerCase()) return null; // already there
+  attacker['Equipped weapon'] = a.transform;
+  return `${attacker['Name']}'s weapon changes from "${prev}" to "${a.transform}".`;
+}
+
 function performAction(a) {
   state.turn += 1;
   const attacker = state.characters[state.attackerIdx];
@@ -392,13 +406,15 @@ function performAction(a) {
   let count = a.rollNumber === 'entityNum' ? 1 : num(a.rollNumber, 0); // single target only, so entityNum -> 1
 
   if (a.type === 'Miscellaneous' || a.type === 'StatusClear') {
+    const transformNote = applyTransform(a, attacker);
     addLogEntry({
       cls: 'info',
       title: `${attacker ? attacker['Name'] : '—'} uses ${a.name}${target ? ' on ' + target['Name'] : ''}`,
       rollLine: '',
       resultLine: a.type === 'StatusClear' ? 'Status effects cleared.' : 'No roll — narrative action.',
-      note: a.effect ? `Effect: ${a.effect}` : '',
+      note: [a.effect ? `Effect: ${a.effect}` : '', transformNote].filter(Boolean).join(' — '),
     });
+    if (transformNote) { renderRoster(); renderDetail(); renderActionDetail(); }
     return;
   }
 
@@ -453,13 +469,14 @@ function performAction(a) {
   }
 
   const effectNote = (a.effect && !ignoreArmour && !punishArmour) ? `Effect: ${a.effect} (apply manually if it triggers)` : '';
+  const transformNote = applyTransform(a, attacker);
 
   addLogEntry({
     cls,
     title: `${attacker ? attacker['Name'] : '—'} uses ${a.name} on ${target ? target['Name'] : '—'}`,
     rollLine: count > 0 ? `${count}× [${min}–${max}] → [${rolls.join(', ')}] = ${rollSum}   ${isHeal ? '' : `(+${atkBonus} ATK ${punishArmour ? '+' : '−'}${defBonus} DEF)`}` : 'No dice — flat effect.',
     resultLine,
-    note: [note, effectNote].filter(Boolean).join(' — '),
+    note: [note, effectNote, transformNote].filter(Boolean).join(' — '),
   });
 
   renderRoster();
