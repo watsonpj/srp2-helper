@@ -189,11 +189,22 @@ function getEquipmentStatBonus(character) {
 
 const STAT_FIELD_TO_KEY = { 'Attack Bonus': 'attack', 'Defence Bonus': 'defence', 'Speed Bonus': 'speed' };
 
+// Status-driven stat modifiers (as opposed to gear-driven ones, above). Only
+// Blind's -1 Attack Bonus is implemented here — Frozen's Speed penalty is
+// deliberately skipped since Speed only affects turn order, which is handled
+// outside this tool.
+function getStatusStatBonus(character) {
+  const out = { attack: 0, defence: 0, speed: 0 };
+  if (hasStatus(character, 'Blind')) out.attack -= 1;
+  return out;
+}
+
 function effectiveStat(character, fieldName) {
   if (!character) return 0;
   const key = STAT_FIELD_TO_KEY[fieldName];
-  const bonus = key ? getEquipmentStatBonus(character)[key] : 0;
-  return num(character[fieldName], 0) + bonus;
+  const gearBonus = key ? getEquipmentStatBonus(character)[key] : 0;
+  const statusBonus = key ? getStatusStatBonus(character)[key] : 0;
+  return num(character[fieldName], 0) + gearBonus + statusBonus;
 }
 
 function effectiveMaxHP(character) {
@@ -374,7 +385,15 @@ function hasBookmark(character) {
   return !!val && val !== '-1';
 }
 
+// Zombie status overrides everything else: "can only move or attack, cannot
+// perform any special actions" — so every non-Damage* action is blocked
+// outright regardless of equipment, including Return, Cure, and Rest. (If you
+// want Reload/Prepare Spell exempted from this — since a Zombie mid-reload is
+// a reasonable ask — that's a one-line change, just say so.)
 function isActionAvailableToPlayer(action, character) {
+  if (hasStatus(character, 'Zombie') && !action.type.startsWith('Damage')) {
+    return false;
+  }
   const nameLower = action.name.trim().toLowerCase();
   if (nameLower === 'return') {
     return hasBookmark(character);
@@ -644,15 +663,21 @@ function renderDetail() {
   const maxHp = effectiveMaxHP(c);
   const hpPct = clamp((num(c['Current HP']) / Math.max(1, maxHp)) * 100, 0, 100);
   const gearBonus = getEquipmentStatBonus(c);
+  const statusBonus = getStatusStatBonus(c);
 
   const editableStat = (key, label, gearKey) => {
     const base = num(c[key], 0);
-    const bonus = gearBonus[gearKey];
+    const gear = gearBonus[gearKey];
+    const status = statusBonus[gearKey];
+    const total = base + gear + status;
+    const parts = [];
+    if (gear) parts.push(`${gear > 0 ? '+' : ''}${gear} gear`);
+    if (status) parts.push(`${status > 0 ? '+' : ''}${status} Blind`);
     return `
     <div class="stat-box">
       <span class="k">${label}</span>
       <input type="number" data-key="${key}" value="${escapeAttr(base)}">
-      ${bonus ? `<span class="stat-gear">${bonus > 0 ? '+' : ''}${bonus} gear → ${base + bonus}</span>` : ''}
+      ${parts.length ? `<span class="stat-gear">${parts.join(', ')} → ${total}</span>` : ''}
     </div>`;
   };
 
@@ -714,6 +739,11 @@ function renderDetail() {
       <span class="k">Status</span>
       <input type="text" data-key="Status" value="${escapeAttr(c['Status'] ?? '')}">
     </div>
+    ${hasStatus(c, 'Poison') ? `
+    <div class="field-row">
+      <span class="k"></span>
+      <button class="btn small" id="poison-tick-btn" type="button" style="justify-self:start;">Apply Poison tick (−1 HP)</button>
+    </div>` : ''}
     <div class="field-row">
       <span class="k">Location</span>
       <input type="text" data-key="Current location" value="${escapeAttr(c['Current location'] ?? '')}">
@@ -750,6 +780,35 @@ function renderDetail() {
       renderActionDetail();
     });
   });
+
+  // Poison has no automatic "end of turn" in this tool (there's no cycle timer to
+  // hook into), so this is a manual once-per-tick button for the GM to click —
+  // it logs to the ledger like everything else so it stays in the BBCode record.
+  const poisonBtn = document.getElementById('poison-tick-btn');
+  if (poisonBtn) {
+    poisonBtn.addEventListener('click', () => {
+      state.turn += 1;
+      const newHP = Math.max(0, num(c['Current HP']) - 1);
+      c['Current HP'] = String(newHP);
+      let resultLine = '−1 HP';
+      let note = '';
+      if (newHP === 0 && (c['Status'] || '').toUpperCase() !== 'OK') {
+        // still Poisoned/whatever — KO alongside it, matching normal damage-KO behaviour
+        note = `${c['Name']} dropped to 0 HP.`;
+      }
+      addLogEntry({
+        cls: 'dmg',
+        atk: c['Name'],
+        action: 'Poison tick',
+        tgt: null,
+        rollLine: '',
+        resultLine,
+        note,
+      });
+      renderDetail();
+      renderRoster();
+    });
+  }
 }
 
 // ---------- Actions rendering ----------
@@ -913,6 +972,24 @@ function applyTransform(a, attacker) {
 // Rolls the target's own status-effect chance for this action's Effect column
 // (a coinflip, unless it's an outright buff), respecting immunity. Returns a
 // short note describing what happened, or '' if there was nothing to roll.
+// Vampire and Zombie both spread through any attack their carrier makes, not
+// just their signature bite — a separate 50% roll per status, independent of
+// whatever the ability's own Effect column does.
+function rollContagion(attacker, target) {
+  if (!attacker || !target) return '';
+  const notes = [];
+  ['Vampire', 'Zombie'].forEach(statusName => {
+    if (!hasStatus(attacker, statusName)) return;
+    if (isImmuneTo(target, statusName)) {
+      notes.push(`${target['Name']} is immune to ${statusName} — it doesn't spread.`);
+    } else if (Math.random() < 0.5) {
+      target['Status'] = statusName;
+      notes.push(`${target['Name']} is now afflicted with ${statusName}, spread from ${attacker['Name']}!`);
+    }
+  });
+  return notes.join(' — ');
+}
+
 function rollAbilityEffect(a, attacker, target) {
   const effect = a.effect || '';
   const buffMatch = /^BuffAB(-?\d+)$/.exec(effect);
@@ -931,7 +1008,7 @@ function rollAbilityEffect(a, attacker, target) {
   }
   if (Math.random() < 0.5) {
     target['Status'] = statusName;
-    return `${target['Name']} is now ${statusName}!`;
+    return `${target['Name']} is now afflicted with ${statusName}!`;
   }
   return `${statusName} attempt failed.`;
 }
@@ -974,6 +1051,7 @@ function performAction(a) {
     let resultLine = a.type === 'StatusClear' ? 'Status effects cleared.' : 'No roll — narrative action.';
     let cureNote = '';
     let bookmarkNote = '';
+    let miscCls = 'info';
     const nameLower = a.name.trim().toLowerCase();
 
     if (nameLower === 'mark location' && attacker) {
@@ -989,6 +1067,14 @@ function performAction(a) {
       } else {
         resultLine = 'No marked location to return to.';
       }
+    } else if (nameLower === 'rest' && attacker) {
+      const healed = Math.min(1, effectiveMaxHP(attacker) - num(attacker['Current HP']));
+      if (healed > 0) { attacker['Current HP'] = String(num(attacker['Current HP']) + healed); miscCls = 'heal'; }
+      resultLine = healed > 0 ? `+${healed} HP.` : 'Already at full HP.';
+      if (hasStatus(attacker, 'Poison')) {
+        attacker['Status'] = 'OK';
+        bookmarkNote = `${attacker['Name']}'s Poison clears after resting.`;
+      }
     }
 
     if (a.type === 'StatusClear' && /^StatusOK$/i.test(a.effect || '') && target) {
@@ -1001,7 +1087,7 @@ function performAction(a) {
       }
     }
     addLogEntry({
-      cls: 'info',
+      cls: miscCls,
       atk: attacker ? attacker['Name'] : '—',
       action: a.name,
       tgt: target ? target['Name'] : null,
@@ -1016,6 +1102,24 @@ function performAction(a) {
   const isHeal = a.type === 'HealRange';
   const isDamageType = !isHeal;
   const targetBurned = isDamageType && hasStatus(target, 'Burned');
+
+  // Charged: adds +1 to the attack, discharges (clears) after use, and costs
+  // the attacker 1 HP themselves. Parasite: adds +1 to the attack, persists.
+  // Both are flat additions to the final total, not per-die like Burned.
+  let outgoingBonus = 0;
+  const outgoingNotes = [];
+  if (isDamageType && attacker) {
+    if (hasStatus(attacker, 'Charged')) {
+      outgoingBonus += 1;
+      attacker['Current HP'] = String(Math.max(0, num(attacker['Current HP']) - 1));
+      attacker['Status'] = 'OK';
+      outgoingNotes.push(`${attacker['Name']}'s Charged status adds 1 damage, then discharges (costing them 1 HP).`);
+    }
+    if (hasStatus(attacker, 'Parasite')) {
+      outgoingBonus += 1;
+      outgoingNotes.push(`${attacker['Name']}'s Parasite status adds 1 damage.`);
+    }
+  }
 
   // roll dice — a Burned target takes +1 on every individual die, not just once on the total
   const rolls = [];
@@ -1054,16 +1158,24 @@ function performAction(a) {
       total *= 2;
       undeadNote = `${target['Name']} is undead — Ferryman's Lantern doubles the damage.`;
     }
+    total += outgoingBonus;
   }
 
   let resultLine, cls, note = armourNote;
   if (isHeal) {
     cls = 'heal';
+    let healNegatedNote = '';
+    if (target && (hasStatus(target, 'Parasite') || hasStatus(target, 'Vampire'))) {
+      const cause = hasStatus(target, 'Parasite') ? 'Parasite' : 'Vampire';
+      healNegatedNote = `${target['Name']}'s ${cause} status negates the healing.`;
+      total = 0;
+    }
     if (target) {
       const newHP = clamp(num(target['Current HP']) + total, 0, effectiveMaxHP(target) || total);
       target['Current HP'] = String(newHP);
     }
     resultLine = `+${total} HP`;
+    note = healNegatedNote;
   } else {
     cls = 'dmg';
     if (target) {
@@ -1075,11 +1187,19 @@ function performAction(a) {
       }
     }
     resultLine = `−${total} HP`;
+    if (attacker && hasStatus(attacker, 'Vampire')) {
+      attacker['Current HP'] = String(clamp(num(attacker['Current HP']) + 1, 0, effectiveMaxHP(attacker) || (num(attacker['Current HP']) + 1)));
+      outgoingNotes.push(`${attacker['Name']} heals 1 HP from their Vampire status.`);
+    }
   }
-  note = [note, undeadNote].filter(Boolean).join(' ');
+  note = [note, undeadNote, ...outgoingNotes].filter(Boolean).join(' ');
 
   // Passive retaliation from the target's own armour (Thorned Breastplate, Molten Armour, etc.)
   const retaliationNotes = isDamageType ? applyRetaliation(target, attacker) : [];
+
+  // Vampire/Zombie attackers can spread their own status through any attack,
+  // independent of whatever the specific ability's own Effect column does.
+  const contagionNote = isDamageType ? rollContagion(attacker, target) : '';
 
   // The ability's own status-effect chance (coinflip, unless it's a guaranteed buff)
   const effectNote = rollAbilityEffect(a, attacker, target);
@@ -1094,7 +1214,7 @@ function performAction(a) {
     tgt: target ? target['Name'] : '—',
     rollLine: count > 0 ? `${count}× [${min}–${max}]${targetBurned ? ' +1 Burned' : ''} → [${rolls.join(', ')}] = ${rollSum}   ${isHeal ? '' : `(+${atkBonus} ATK ${punishArmour ? '+' : '−'}${defBonus} DEF)`}` : 'No dice — flat effect.',
     resultLine,
-    note: [note, ...retaliationNotes, effectNote, transformNote, itemNote].filter(Boolean).join(' — '),
+    note: [note, ...retaliationNotes, contagionNote, effectNote, transformNote, itemNote].filter(Boolean).join(' — '),
   });
 
   renderRoster();
