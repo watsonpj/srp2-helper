@@ -123,6 +123,84 @@ function parseItemEffects(effectText) {
   return out;
 }
 
+// Stat-bonus deltas an item confers while equipped. Prefers dedicated numeric
+// columns (Attack Bonus Delta / Defence Bonus Delta / Speed Bonus Delta / HP Delta)
+// if an uploaded Items CSV provides them; otherwise parses the two phrasings
+// actually used in the default sheet: armour-style ("+2 Defence Bonus", can be
+// negative and/or comma-separated) and trinket-style ("Increases Attack Bonus
+// by 1", "Increases all stat bonuses and HP by 1").
+function parseStatDeltasFromText(text) {
+  const out = { attack: 0, defence: 0, speed: 0, hp: 0 };
+  const t = text || '';
+  const armourStyle = /([+-]\d+)\s*(Attack|Defence|Speed)\s*Bonus/gi;
+  let m;
+  while ((m = armourStyle.exec(t))) {
+    out[m[2].toLowerCase()] += parseInt(m[1], 10);
+  }
+  const incDec = /(Increases|Decreases)\s+(Attack Bonus|Defence Bonus|Speed Bonus|HP)\s+by\s+(\d+)/gi;
+  while ((m = incDec.exec(t))) {
+    const sign = /increases/i.test(m[1]) ? 1 : -1;
+    const val = sign * parseInt(m[3], 10);
+    const raw = m[2].toLowerCase();
+    const key = raw.startsWith('attack') ? 'attack' : raw.startsWith('defence') ? 'defence' : raw.startsWith('speed') ? 'speed' : 'hp';
+    out[key] += val;
+  }
+  const allStat = /increases all stat bonuses and hp by (\d+)/i.exec(t);
+  if (allStat) {
+    const val = parseInt(allStat[1], 10);
+    out.attack += val; out.defence += val; out.speed += val; out.hp += val;
+  }
+  return out;
+}
+
+function getItemStatDeltas(item) {
+  if (!item) return { attack: 0, defence: 0, speed: 0, hp: 0 };
+  const explicitKeys = ['attackBonusDelta', 'defenceBonusDelta', 'speedBonusDelta', 'hpDelta'];
+  const hasExplicit = explicitKeys.some(k => item[k] !== undefined && item[k] !== '' && item[k] !== null);
+  if (hasExplicit) {
+    return {
+      attack: num(item.attackBonusDelta, 0),
+      defence: num(item.defenceBonusDelta, 0),
+      speed: num(item.speedBonusDelta, 0),
+      hp: num(item.hpDelta, 0),
+    };
+  }
+  return parseStatDeltasFromText(item.effect);
+}
+
+// Sums stat deltas across a character's equipped weapon/armour/trinket (not
+// unequipped inventory — only gear actually worn/wielded confers bonuses).
+// These are never written back into the character's own Attack/Defence/Speed
+// Bonus fields — those stay exactly as entered, and equipment bonuses are
+// added on top only at the moment a roll or display needs the effective
+// total. That way equipping/unequipping something is instantly reversible
+// and never double-counts against a value someone already tallied by hand.
+function getEquipmentStatBonus(character) {
+  const total = { attack: 0, defence: 0, speed: 0, hp: 0 };
+  if (!character) return total;
+  [character['Equipped weapon'], character['Equipped armour'], character['Equipped trinket']].forEach(name => {
+    const item = findItem(name);
+    if (!item) return;
+    const d = getItemStatDeltas(item);
+    total.attack += d.attack; total.defence += d.defence; total.speed += d.speed; total.hp += d.hp;
+  });
+  return total;
+}
+
+const STAT_FIELD_TO_KEY = { 'Attack Bonus': 'attack', 'Defence Bonus': 'defence', 'Speed Bonus': 'speed' };
+
+function effectiveStat(character, fieldName) {
+  if (!character) return 0;
+  const key = STAT_FIELD_TO_KEY[fieldName];
+  const bonus = key ? getEquipmentStatBonus(character)[key] : 0;
+  return num(character[fieldName], 0) + bonus;
+}
+
+function effectiveMaxHP(character) {
+  if (!character) return 0;
+  return num(character['Max HP'], 0) + getEquipmentStatBonus(character).hp;
+}
+
 // Combines the effects of a character's equipped armour + trinket (weapon isn't
 // consulted here — weapon damage/transform already comes straight from the
 // selected action's own columns).
@@ -250,6 +328,98 @@ document.getElementById('bestiary-search').addEventListener('input', (e) => {
   renderBestiaryList();
 });
 
+// ---------- Item-gated actions ----------
+const INVENTORY_SLOT_KEYS = ['Inventory slot 1', 'Inventory slot 2', 'Inventory slot 3', 'Inventory slot 4', 'Inventory slot 5', 'Inventory slot 6'];
+const EQUIP_SLOT_KEYS = ['Equipped weapon', 'Equipped armour', 'Equipped trinket'];
+
+// Recomputed whenever the items list (default or uploaded) changes: the set of
+// every action name that SOME item grants, anywhere in the whole items table.
+// Any action not in this set is either a universal narrative action (Talk,
+// Rest, Shop...) or a bestiary-only attack (Bite, Howl...) — see isActionAvailableToPlayer.
+function rebuildItemGrantedActionNames() {
+  const s = new Set();
+  state.items.forEach(it => {
+    const act = (it.action || '').trim().toLowerCase();
+    if (act && act !== '-') s.add(act);
+  });
+  state._itemGrantedActionNames = s;
+}
+
+// The action names a specific character currently has access to via whatever
+// they've got equipped or carrying in their inventory.
+function getGrantedActionNames(character) {
+  const names = new Set();
+  if (!character) return names;
+  [...EQUIP_SLOT_KEYS, ...INVENTORY_SLOT_KEYS].forEach(slot => {
+    const item = findItem(character[slot]);
+    if (item && item.action && item.action.trim() && item.action.trim() !== '-') {
+      names.add(item.action.trim().toLowerCase());
+    }
+  });
+  return names;
+}
+
+// Innate (Miscellaneous, no item source) => everyone can do it.
+// Item-linked => only if the character currently has that item equipped/carried.
+// Neither (a Damage/Heal/StatusClear action with no item source) => bestiary-only, never shown to players.
+// A handful of actions have a bespoke, named mechanic per their Notes column
+// that goes beyond generic item-gating (Mark Location / Return work as a pair
+// via the character sheet's own Bookmark field). These are the only two
+// action names with special-cased availability rules.
+// The sample sheet uses "-1" as the sentinel for "no bookmark set" rather than
+// an empty string, so both the gating check and the Return mechanic need to
+// treat that value as unset too, not just blank.
+function hasBookmark(character) {
+  const val = (character && character['Bookmark'] || '').trim();
+  return !!val && val !== '-1';
+}
+
+function isActionAvailableToPlayer(action, character) {
+  const nameLower = action.name.trim().toLowerCase();
+  if (nameLower === 'return') {
+    return hasBookmark(character);
+  }
+  if (state._itemGrantedActionNames.has(nameLower)) {
+    return getGrantedActionNames(character).has(nameLower);
+  }
+  return action.type === 'Miscellaneous';
+}
+
+function findSourceItemForAction(actionName) {
+  const nameLower = (actionName || '').trim().toLowerCase();
+  return state.items.find(it => (it.action || '').trim().toLowerCase() === nameLower) || null;
+}
+
+// Consumables are used up (cleared from whichever inventory slot holds them);
+// equip-slot items whose Effect/description says "Breaks after use" (e.g. the
+// Strange Crucible) are unequipped after their action fires. Neither of these
+// is a coinflip — it's a guaranteed consequence of taking the action at all.
+function consumeOrBreakSourceItem(action, attacker) {
+  if (!attacker) return null;
+  const item = findSourceItemForAction(action.name);
+  if (!item) return null;
+
+  if (item.type === 'Consumable') {
+    for (const slot of INVENTORY_SLOT_KEYS) {
+      if ((attacker[slot] || '').trim().toLowerCase() === item.name.trim().toLowerCase()) {
+        attacker[slot] = '';
+        return `${attacker['Name']} uses up their ${item.name}.`;
+      }
+    }
+    return `${attacker['Name']} used ${action.name}, but no ${item.name} was found in their inventory to remove — check their sheet.`;
+  }
+
+  if (/breaks after use/i.test(item.effect || '')) {
+    for (const slot of EQUIP_SLOT_KEYS) {
+      if ((attacker[slot] || '').trim().toLowerCase() === item.name.trim().toLowerCase()) {
+        attacker[slot] = 'None';
+        return `${item.name} breaks after use and is removed from ${attacker['Name']}.`;
+      }
+    }
+  }
+  return null;
+}
+
 // ---------- File uploads ----------
 document.getElementById('sheet-upload').addEventListener('change', (e) => {
   const file = e.target.files[0];
@@ -325,11 +495,19 @@ document.getElementById('items-upload').addEventListener('change', (e) => {
         value: o.Value || '',
         stackSize: o['Stack size'] || '',
         notes: o.Notes || '',
+        // Optional forward-compatible columns — used instead of parsing Effect text when present.
+        attackBonusDelta: o['Attack Bonus Delta'],
+        defenceBonusDelta: o['Defence Bonus Delta'],
+        speedBonusDelta: o['Speed Bonus Delta'],
+        hpDelta: o['HP Delta'],
       }));
-      // Item effects (immunities, forced statuses, etc.) may now read differently — refresh anyone visibly affected.
+      rebuildItemGrantedActionNames();
+      // Item effects (immunities, forced statuses, stat bonuses, action access) may now read differently — refresh everything.
       state.characters.forEach(syncForcedStatus);
       renderRoster();
       renderDetail();
+      renderActionList();
+      renderActionDetail();
     } catch (err) {
       alert('Could not read that items CSV: ' + err.message);
     }
@@ -463,13 +641,44 @@ function renderDetail() {
     return;
   }
   const c = state.characters[idx];
-  const hpPct = clamp((num(c['Current HP']) / Math.max(1, num(c['Max HP']))) * 100, 0, 100);
+  const maxHp = effectiveMaxHP(c);
+  const hpPct = clamp((num(c['Current HP']) / Math.max(1, maxHp)) * 100, 0, 100);
+  const gearBonus = getEquipmentStatBonus(c);
 
-  const editableStat = (key, label) => `
+  const editableStat = (key, label, gearKey) => {
+    const base = num(c[key], 0);
+    const bonus = gearBonus[gearKey];
+    return `
     <div class="stat-box">
       <span class="k">${label}</span>
-      <input type="number" data-key="${key}" value="${escapeAttr(c[key] ?? 0)}">
+      <input type="number" data-key="${key}" value="${escapeAttr(base)}">
+      ${bonus ? `<span class="stat-gear">${bonus > 0 ? '+' : ''}${bonus} gear → ${base + bonus}</span>` : ''}
     </div>`;
+  };
+
+  // Builds a <select> of items filtered to the given type(s) (or all items, for
+  // inventory slots). Whatever's already in the cell is preserved as a selected
+  // option even if it doesn't match a known item, so we never silently clobber
+  // existing sheet data that predates the item list or doesn't match it exactly.
+  const itemSelect = (key, label, types) => {
+    const current = (c[key] ?? '').trim();
+    const pool = types ? state.items.filter(it => types.includes(it.type)) : state.items;
+    const sorted = [...pool].sort((x, y) => x.name.localeCompare(y.name));
+    const isKnown = !current || current.toLowerCase() === 'none' || sorted.some(it => it.name.trim().toLowerCase() === current.toLowerCase());
+    let options = `<option value="None" ${!current || current.toLowerCase() === 'none' ? 'selected' : ''}>None</option>`;
+    if (!isKnown) options += `<option value="${escapeAttr(current)}" selected>${escapeHtml(current)} (unrecognized)</option>`;
+    let lastType = null;
+    sorted.forEach(it => {
+      if (types && types.length > 1 && it.type !== lastType) { lastType = it.type; }
+      const sel = it.name.trim().toLowerCase() === current.toLowerCase() ? 'selected' : '';
+      options += `<option value="${escapeAttr(it.name)}" ${sel}>${escapeHtml(it.name)}</option>`;
+    });
+    return `
+    <div class="field-row">
+      <span class="k">${label}</span>
+      <select data-key="${key}">${options}</select>
+    </div>`;
+  };
 
   const equipField = (key, label) => `
     <div class="field-row">
@@ -488,16 +697,16 @@ function renderDetail() {
     <div class="hp-block">
       <div class="hp-row">
         <span class="label">HP</span>
-        <span class="value"><input type="number" id="hp-current" data-key="Current HP" value="${escapeAttr(c['Current HP'] ?? 0)}" style="width:3.2em;background:transparent;border:none;color:inherit;font:inherit;text-align:right;"> / <input type="number" id="hp-max" data-key="Max HP" value="${escapeAttr(c['Max HP'] ?? 0)}" style="width:3.2em;background:transparent;border:none;color:inherit;font:inherit;"></span>
+        <span class="value"><input type="number" id="hp-current" data-key="Current HP" value="${escapeAttr(c['Current HP'] ?? 0)}" style="width:3.2em;background:transparent;border:none;color:inherit;font:inherit;text-align:right;"> / <input type="number" id="hp-max" data-key="Max HP" value="${escapeAttr(c['Max HP'] ?? 0)}" style="width:3.2em;background:transparent;border:none;color:inherit;font:inherit;">${gearBonus.hp ? ` <span class="stat-gear" style="display:inline;">(${gearBonus.hp > 0 ? '+' : ''}${gearBonus.hp} gear → ${maxHp})</span>` : ''}</span>
       </div>
       <div class="hp-bar-track"><div class="hp-bar-fill" id="hp-bar-fill" style="width:${hpPct}%;"></div></div>
     </div>
 
     <div class="section-label">Bonuses</div>
     <div class="stat-grid">
-      ${editableStat('Attack Bonus', 'Attack')}
-      ${editableStat('Defence Bonus', 'Defence')}
-      ${editableStat('Speed Bonus', 'Speed')}
+      ${editableStat('Attack Bonus', 'Attack', 'attack')}
+      ${editableStat('Defence Bonus', 'Defence', 'defence')}
+      ${editableStat('Speed Bonus', 'Speed', 'speed')}
     </div>
 
     <div class="section-label">Status</div>
@@ -512,36 +721,32 @@ function renderDetail() {
 
     <div class="section-label">Equipment</div>
     <div class="equip-grid">
-      ${equipField('Equipped weapon', 'Weapon')}
-      ${equipField('Equipped armour', 'Armour')}
+      ${itemSelect('Equipped weapon', 'Weapon', ['Weapon'])}
+      ${itemSelect('Equipped armour', 'Armour', ['Armour'])}
     </div>
-    ${equipField('Equipped trinket', 'Trinket')}
+    ${itemSelect('Equipped trinket', 'Trinket', ['Trinket'])}
 
     <div class="section-label">Inventory</div>
     <div class="equip-grid">
-      ${equipField('Inventory slot 1','Slot 1')}
-      ${equipField('Inventory slot 2','Slot 2')}
-      ${equipField('Inventory slot 3','Slot 3')}
-      ${equipField('Inventory slot 4','Slot 4')}
-      ${equipField('Inventory slot 5','Slot 5')}
-      ${equipField('Inventory slot 6','Slot 6')}
+      ${itemSelect('Inventory slot 1','Slot 1', null)}
+      ${itemSelect('Inventory slot 2','Slot 2', null)}
+      ${itemSelect('Inventory slot 3','Slot 3', null)}
+      ${itemSelect('Inventory slot 4','Slot 4', null)}
+      ${itemSelect('Inventory slot 5','Slot 5', null)}
+      ${itemSelect('Inventory slot 6','Slot 6', null)}
     </div>
   `;
 
-  body.querySelectorAll('input[data-key]').forEach(inp => {
-    inp.addEventListener('change', () => {
-      const key = inp.dataset.key;
-      c[key] = inp.value;
-      if (key === 'Current HP' || key === 'Max HP') {
-        const pct = clamp((num(c['Current HP']) / Math.max(1, num(c['Max HP']))) * 100, 0, 100);
-        const fill = document.getElementById('hp-bar-fill');
-        if (fill) fill.style.width = pct + '%';
-      }
+  body.querySelectorAll('input[data-key], select[data-key]').forEach(el => {
+    el.addEventListener('change', () => {
+      const key = el.dataset.key;
+      c[key] = el.value;
       if (key === 'Equipped armour') {
         syncForcedStatus(c); // e.g. equipping Cursed/Sealed/Molten Armour immediately applies its forced status
-        renderDetail();
       }
+      renderDetail();
       renderRoster();
+      renderActionList();
       renderActionDetail();
     });
   });
@@ -576,16 +781,9 @@ function renderActionList() {
   const list = document.getElementById('action-list');
   const attacker = state.characters[state.attackerIdx];
 
-  if (attacker && attacker.__mob) {
-    const abilityNames = attacker.__abilities.map(n => n.toLowerCase());
-    const filtered = state.actions.filter(a => abilityNames.includes(a.name.toLowerCase()));
-    document.getElementById('actions-count').textContent = `${attacker['Name']}'s abilities`;
+  const renderRows = (actions) => {
     list.innerHTML = '';
-    if (!filtered.length) {
-      list.innerHTML = '<div class="empty-state">This monster has no usable abilities on file.</div>';
-      return;
-    }
-    filtered.forEach(a => {
+    actions.forEach(a => {
       const row = document.createElement('div');
       row.className = 'action-row' + (a.id === state.selectedActionId ? ' is-selected' : '');
       row.innerHTML = `<span class="aname">${escapeHtml(a.name)}</span><span class="atype mono">${escapeHtml(a.type)}</span>`;
@@ -596,23 +794,33 @@ function renderActionList() {
       });
       list.appendChild(row);
     });
+  };
+
+  if (attacker && attacker.__mob) {
+    const abilityNames = attacker.__abilities.map(n => n.toLowerCase());
+    const filtered = state.actions.filter(a => abilityNames.includes(a.name.toLowerCase()));
+    document.getElementById('actions-count').textContent = `${attacker['Name']}'s abilities`;
+    if (state.selectedActionId !== null && !filtered.some(a => a.id === state.selectedActionId)) state.selectedActionId = null;
+    if (!filtered.length) {
+      list.innerHTML = '<div class="empty-state">This monster has no usable abilities on file.</div>';
+      return;
+    }
+    renderRows(filtered);
     return;
   }
 
-  document.getElementById('actions-count').textContent = state.actions.length + ' actions';
-  const filtered = state.actions.filter(a => state.activeType === 'All' || a.type === state.activeType);
-  list.innerHTML = '';
-  filtered.forEach(a => {
-    const row = document.createElement('div');
-    row.className = 'action-row' + (a.id === state.selectedActionId ? ' is-selected' : '');
-    row.innerHTML = `<span class="aname">${escapeHtml(a.name)}</span><span class="atype mono">${escapeHtml(a.type)}</span>`;
-    row.addEventListener('click', () => {
-      state.selectedActionId = a.id;
-      renderActionList();
-      renderActionDetail();
-    });
-    list.appendChild(row);
-  });
+  // Player attacker: gate by type tab AND by what they currently have equipped/carried.
+  const byType = state.actions.filter(a => state.activeType === 'All' || a.type === state.activeType);
+  const filtered = attacker ? byType.filter(a => isActionAvailableToPlayer(a, attacker)) : byType;
+  document.getElementById('actions-count').textContent = attacker
+    ? `${filtered.length} available to ${attacker['Name']}`
+    : state.actions.length + ' actions';
+  if (state.selectedActionId !== null && !filtered.some(a => a.id === state.selectedActionId)) state.selectedActionId = null;
+  if (!filtered.length) {
+    list.innerHTML = '<div class="empty-state">Nothing available in this category — check their equipment and inventory.</div>';
+    return;
+  }
+  renderRows(filtered);
 }
 
 function formulaText(a) {
@@ -670,8 +878,30 @@ function rollDie(min, max) {
 // Transform is a single item name, even when it contains a comma — never split it.
 // This is applied unconditionally, purely as an outcome of using the action — there is
 // no "required weapon" check anywhere; you're choosing the action yourself.
+// If the action has a Transform value, figure out what kind of transform it
+// actually is by checking what that item is:
+//  - a Weapon (Chain Lash -> "Kusarigama, Sickle", Reload -> "Crossbow", etc.)
+//    -> the attacker's equipped weapon becomes that item, as before.
+//  - anything else (Eat Bright Fruit -> "Fruit Seed") -> that's not a weapon
+//    swap at all, it's the action granting a new item, which goes into the
+//    first empty inventory slot instead.
+// Transform is always a single item name, even when it contains a comma —
+// never split it.
 function applyTransform(a, attacker) {
   if (!a.transform || !attacker) return null;
+  const transformItem = findItem(a.transform);
+
+  if (transformItem && transformItem.type !== 'Weapon') {
+    for (const slot of INVENTORY_SLOT_KEYS) {
+      const val = (attacker[slot] || '').trim();
+      if (!val || val.toLowerCase() === 'none') {
+        attacker[slot] = transformItem.name;
+        return `${attacker['Name']} receives a ${transformItem.name}.`;
+      }
+    }
+    return `${attacker['Name']} would receive a ${transformItem.name}, but their inventory is full.`;
+  }
+
   const prev = attacker['Equipped weapon'] || 'None';
   attacker['Equipped weapon'] = a.transform;
   if (prev.trim().toLowerCase() === a.transform.trim().toLowerCase()) {
@@ -740,8 +970,27 @@ function performAction(a) {
 
   if (a.type === 'Miscellaneous' || a.type === 'StatusClear') {
     const transformNote = applyTransform(a, attacker);
+    const itemNote = consumeOrBreakSourceItem(a, attacker);
     let resultLine = a.type === 'StatusClear' ? 'Status effects cleared.' : 'No roll — narrative action.';
     let cureNote = '';
+    let bookmarkNote = '';
+    const nameLower = a.name.trim().toLowerCase();
+
+    if (nameLower === 'mark location' && attacker) {
+      attacker['Bookmark'] = attacker['Current location'] || '';
+      bookmarkNote = `${attacker['Name']} marks ${attacker['Bookmark'] || 'this location'} — Return is now available.`;
+    } else if (nameLower === 'return' && attacker) {
+      const dest = attacker['Bookmark'] || '';
+      if (hasBookmark(attacker)) {
+        attacker['Current location'] = dest;
+        attacker['Bookmark'] = '-1'; // matches the sheet's own "unset" sentinel
+        resultLine = `Returned to ${dest}.`;
+        bookmarkNote = `${attacker['Name']}'s bookmark is cleared.`;
+      } else {
+        resultLine = 'No marked location to return to.';
+      }
+    }
+
     if (a.type === 'StatusClear' && /^StatusOK$/i.test(a.effect || '') && target) {
       const forced = (getForcedStatus(target) || '').toLowerCase();
       if (CURE_RESISTANT_FORCED_STATUSES.includes(forced)) {
@@ -758,9 +1007,9 @@ function performAction(a) {
       tgt: target ? target['Name'] : null,
       rollLine: '',
       resultLine,
-      note: [cureNote, a.effect && !/^StatusOK$/i.test(a.effect) ? `Effect: ${a.effect}` : '', transformNote].filter(Boolean).join(' — '),
+      note: [cureNote, bookmarkNote, a.effect && !/^StatusOK$/i.test(a.effect) ? `Effect: ${a.effect}` : '', transformNote, itemNote].filter(Boolean).join(' — '),
     });
-    renderRoster(); renderDetail(); renderActionDetail();
+    renderRoster(); renderDetail(); renderActionList(); renderActionDetail();
     return;
   }
 
@@ -777,8 +1026,8 @@ function performAction(a) {
   }
   const rollSum = rolls.reduce((s, v) => s + v, 0);
 
-  const atkBonus = num(attacker ? attacker['Attack Bonus'] : 0);
-  const defBonus = num(target ? target['Defence Bonus'] : 0);
+  const atkBonus = num(attacker ? effectiveStat(attacker, 'Attack Bonus') : 0);
+  const defBonus = num(target ? effectiveStat(target, 'Defence Bonus') : 0);
 
   let ignoreArmour = /ignorearmour/i.test(a.effect || '');
   let punishArmour = /punisharmour/i.test(a.effect || '');
@@ -811,7 +1060,7 @@ function performAction(a) {
   if (isHeal) {
     cls = 'heal';
     if (target) {
-      const newHP = clamp(num(target['Current HP']) + total, 0, num(target['Max HP'], total));
+      const newHP = clamp(num(target['Current HP']) + total, 0, effectiveMaxHP(target) || total);
       target['Current HP'] = String(newHP);
     }
     resultLine = `+${total} HP`;
@@ -836,6 +1085,7 @@ function performAction(a) {
   const effectNote = rollAbilityEffect(a, attacker, target);
 
   const transformNote = applyTransform(a, attacker);
+  const itemNote = consumeOrBreakSourceItem(a, attacker);
 
   addLogEntry({
     cls,
@@ -844,11 +1094,12 @@ function performAction(a) {
     tgt: target ? target['Name'] : '—',
     rollLine: count > 0 ? `${count}× [${min}–${max}]${targetBurned ? ' +1 Burned' : ''} → [${rolls.join(', ')}] = ${rollSum}   ${isHeal ? '' : `(+${atkBonus} ATK ${punishArmour ? '+' : '−'}${defBonus} DEF)`}` : 'No dice — flat effect.',
     resultLine,
-    note: [note, ...retaliationNotes, effectNote, transformNote].filter(Boolean).join(' — '),
+    note: [note, ...retaliationNotes, effectNote, transformNote, itemNote].filter(Boolean).join(' — '),
   });
 
   renderRoster();
   renderDetail();
+  renderActionList();
   renderActionDetail();
 }
 
@@ -967,6 +1218,7 @@ function escapeHtml(s) {
 function escapeAttr(s) { return escapeHtml(s); }
 
 // ---------- Init ----------
+rebuildItemGrantedActionNames();
 renderTypeTabs();
 renderActionList();
 renderActionDetail();
