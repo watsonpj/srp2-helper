@@ -1160,15 +1160,6 @@ function performAction(a) {
       }
     }
 
-    // When there's no dice roll and nothing more specific already claimed the
-    // headline (Return/Rest/Cure above), a weapon/item transform IS the result
-    // of the action — show it as the main line rather than burying it as a note.
-    let transformPromoted = false;
-    if (transformNote && resultLine === 'No roll — narrative action.') {
-      resultLine = transformNote;
-      transformPromoted = true;
-    }
-
     addLogEntry({
       cls: miscCls,
       atk: attacker ? attacker['Name'] : '—',
@@ -1176,7 +1167,8 @@ function performAction(a) {
       tgt: target ? target['Name'] : null,
       rollLine: '',
       resultLine,
-      note: [cureNote, bookmarkNote, a.effect && !/^StatusOK$/i.test(a.effect) ? `Effect: ${a.effect}` : '', transformPromoted ? '' : transformNote, itemNote].filter(Boolean).join(' — '),
+      transform: transformNote,
+      note: [cureNote, bookmarkNote, a.effect && !/^StatusOK$/i.test(a.effect) ? `Effect: ${a.effect}` : '', itemNote].filter(Boolean).join(' — '),
     });
     renderRoster(); renderDetail(); renderActionList(); renderActionDetail();
     return;
@@ -1310,7 +1302,8 @@ function performAction(a) {
     tgt: target ? target['Name'] : '—',
     rollLine: count > 0 ? `${count} × [${min}–${max}]${targetBurned ? ' +1 Burned' : ''} → [${rolls.join(', ')}] = ${rollSum}   ${isHeal ? '' : `(+${atkBonus} ATK ${punishArmour ? '+' : '−'}${defBonus} DEF)`}` : 'No dice — flat effect.',
     resultLine,
-    note: [note, ...retaliationNotes, contagionNote, effectNote, transformNote, itemNote].filter(Boolean).join(' — '),
+    transform: transformNote,
+    note: [note, ...retaliationNotes, contagionNote, effectNote, itemNote].filter(Boolean).join(' — '),
   });
 
   renderRoster();
@@ -1332,8 +1325,10 @@ function addLogEntry(entry) {
 
 // Builds a BBCode block (for XenForo-style forums) from a ledger entry:
 // bold names/action on the title line, the dice breakdown shrunk and muted,
-// the result bolded and colour-coded (green for heals, red for damage),
-// and any note in italics.
+// the result bolded and colour-coded (green for heals, red for damage), a
+// weapon/item transform always in its own fixed style (regardless of whether
+// it was the only thing that happened, like Reload, or a side-effect of an
+// attack, like Chain Lash — same style either way), and any other note in italics.
 function toBBCode(e) {
   const lines = [e.bbTitle];
   if (e.rollLine) {
@@ -1343,6 +1338,7 @@ function toBBCode(e) {
     const color = e.cls === 'heal' ? '#2e7d4f' : (e.cls === 'dmg' ? '#b0362b' : null);
     lines.push(color ? `[b][color=${color}]${e.resultLine}[/color][/b]` : `[b]${e.resultLine}[/b]`);
   }
+  if (e.transform) lines.push(`[i][color=#6f93c9]${e.transform}[/color][/i]`);
   if (e.note) lines.push(`[i]${e.note}[/i]`);
   return lines.join('\n');
 }
@@ -1384,6 +1380,7 @@ function renderLedger() {
       </div>
       ${e.rollLine ? `<div class="ledger-roll">${escapeHtml(e.rollLine)}</div>` : ''}
       <div class="ledger-result ${e.cls}">${escapeHtml(e.resultLine)}</div>
+      ${e.transform ? `<div class="ledger-transform">${escapeHtml(e.transform)}</div>` : ''}
       ${e.note ? `<div class="ledger-note">${escapeHtml(e.note)}</div>` : ''}
       <div class="ledger-actions">
         <button class="copy-btn" type="button" data-id="${e.id}">Copy for forum</button>
