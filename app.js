@@ -266,6 +266,25 @@ function hasStatus(character, statusName) {
   return (character['Status'] || '').trim().toLowerCase() === statusName.toLowerCase();
 }
 
+// Single place that decides "is/was defeated" wherever HP changes — covers the
+// main attack roll, retaliation damage, Charged's self-damage, and the manual
+// Poison tick alike, so nobody can drop to 0 HP through a side path and just
+// silently sit there with no note and no KO status.
+function checkDefeatOrRevive(character) {
+  if (!character) return '';
+  const hp = num(character['Current HP']);
+  const isKO = (character['Status'] || '').trim().toUpperCase() === 'KO';
+  if (hp <= 0 && !isKO) {
+    character['Status'] = 'KO';
+    return `${character['Name']} is defeated!`;
+  }
+  if (hp > 0 && isKO) {
+    character['Status'] = 'OK';
+    return `${character['Name']} is back on their feet.`;
+  }
+  return '';
+}
+
 function isUndead(character) {
   if (!character) return false;
   if (character.__undead) return true;
@@ -842,12 +861,8 @@ function renderDetail() {
       state.turn += 1;
       const newHP = Math.max(0, num(c['Current HP']) - 1);
       c['Current HP'] = String(newHP);
-      let resultLine = '−1 HP';
-      let note = '';
-      if (newHP === 0 && (c['Status'] || '').toUpperCase() !== 'OK') {
-        // still Poisoned/whatever — KO alongside it, matching normal damage-KO behaviour
-        note = `${c['Name']} dropped to 0 HP.`;
-      }
+      const resultLine = '−1 HP';
+      const note = checkDefeatOrRevive(c);
       addLogEntry({
         cls: 'dmg',
         atk: c['Name'],
@@ -1073,12 +1088,15 @@ function applyRetaliation(target, attacker) {
   const notes = [];
   if (!target || !attacker) return notes;
   const eff = getEquippedEffects(target);
+  let attackerDefeated = false;
   if (eff.retaliateDamage > 0) {
     const newHP = Math.max(0, num(attacker['Current HP']) - eff.retaliateDamage);
     attacker['Current HP'] = String(newHP);
     notes.push(`${attacker['Name']} takes ${eff.retaliateDamage} retaliation damage from ${target['Name']}'s armour.`);
+    const defeatNote = checkDefeatOrRevive(attacker);
+    if (defeatNote) { notes.push(defeatNote); attackerDefeated = hasStatus(attacker, 'KO'); }
   }
-  if (eff.retaliateStatus) {
+  if (eff.retaliateStatus && !attackerDefeated) {
     if (isImmuneTo(attacker, eff.retaliateStatus)) {
       notes.push(`${attacker['Name']} is immune to the retaliation status.`);
     } else {
@@ -1164,8 +1182,13 @@ function performAction(a) {
     if (hasStatus(attacker, 'Charged')) {
       outgoingBonus += 1;
       attacker['Current HP'] = String(Math.max(0, num(attacker['Current HP']) - 1));
-      attacker['Status'] = 'OK';
       outgoingNotes.push(`${attacker['Name']}'s Charged status adds 1 damage, then discharges (costing them 1 HP).`);
+      const chargedDefeatNote = checkDefeatOrRevive(attacker);
+      if (chargedDefeatNote) {
+        outgoingNotes.push(chargedDefeatNote);
+      } else {
+        attacker['Status'] = 'OK'; // discharges normally, only if that self-damage didn't just KO them
+      }
     }
     if (hasStatus(attacker, 'Parasite')) {
       outgoingBonus += 1;
@@ -1225,6 +1248,8 @@ function performAction(a) {
     if (target) {
       const newHP = clamp(num(target['Current HP']) + total, 0, effectiveMaxHP(target) || total);
       target['Current HP'] = String(newHP);
+      const reviveNote = checkDefeatOrRevive(target);
+      if (reviveNote) healNegatedNote = [healNegatedNote, reviveNote].filter(Boolean).join(' ');
     }
     resultLine = `+${total} HP`;
     note = healNegatedNote;
@@ -1233,10 +1258,8 @@ function performAction(a) {
     if (target) {
       const newHP = Math.max(0, num(target['Current HP']) - total);
       target['Current HP'] = String(newHP);
-      if (newHP === 0 && (target['Status'] || '').toUpperCase() === 'OK') {
-        target['Status'] = 'KO';
-        note += (note ? ' ' : '') + `${target['Name']} dropped to 0 HP — status set to KO.`;
-      }
+      const defeatNote = checkDefeatOrRevive(target);
+      if (defeatNote) note += (note ? ' ' : '') + defeatNote;
     }
     resultLine = `−${total} HP`;
     if (attacker && hasStatus(attacker, 'Vampire')) {
