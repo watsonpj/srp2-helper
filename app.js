@@ -8,7 +8,14 @@
 const DEFAULT_HEADERS = ['Name','Current location','Previous location','Status','Current HP','Max HP',
   'Attack Bonus','Defence Bonus','Speed Bonus','Equipped weapon','Equipped armour','Equipped trinket',
   'Inventory slot 1','Inventory slot 2','Inventory slot 3','Inventory slot 4','Inventory slot 5','Inventory slot 6',
-  'Likes','Bookmark','Cycle'];
+  'Likes','Bookmark','Cycle','Entity Type','Base Name'];
+
+// Entity Type: 'Player' (default for anything with no value, i.e. every sheet from
+// before this existed) or 'Enemy'/'NPC'. Base Name is the plain bestiary species
+// name ("Wolf") kept alongside the unique display Name ("Wolf (2)") specifically so
+// a spawned instance survives an export → re-import round trip as the same monster
+// with its own ability list, instead of silently becoming an ordinary player row.
+const ENEMY_ENTITY_TYPES = ['enemy', 'npc'];
 
 const UNDEAD_BESTIARY_NAMES = ['zombie', 'vampire', 'lich'];
 // Maps an action's raw Effect suffix (Status<X>) to the actual status name used everywhere else.
@@ -270,15 +277,49 @@ function findBestiaryEntry(id) {
   return state.bestiary.find(b => b.id === id) || null;
 }
 
+// Makes sure the two entity-tracking columns exist on whatever sheet is
+// currently loaded, appending them if an older-format CSV didn't have them —
+// and backfilling every already-loaded character with a sensible default the
+// moment the columns are added, so nobody ends up with a blank Entity Type.
+function ensureEntityColumns() {
+  let added = false;
+  ['Entity Type', 'Base Name'].forEach(col => {
+    if (!state.headers.includes(col)) { state.headers.push(col); added = true; }
+  });
+  if (added) {
+    state.characters.forEach(c => {
+      if (!(c['Entity Type'] || '').trim()) c['Entity Type'] = c.__mob ? 'Enemy' : 'Player';
+      if (c['Base Name'] === undefined) c['Base Name'] = '';
+    });
+  }
+}
+
+// Rebuilds a character's mob metadata (ability restriction, undead flag, bestiary
+// link) from Entity Type + Base Name alone — this is what makes a previously
+// exported sheet correctly recognise its spawned enemies as enemies again on
+// re-upload, instead of treating them as ordinary players with no ability list.
+function reconstructMobMetadata(character) {
+  const entityType = (character['Entity Type'] || '').trim().toLowerCase();
+  if (!ENEMY_ENTITY_TYPES.includes(entityType)) return;
+  const baseName = (character['Base Name'] || '').trim();
+  if (!baseName) return;
+  const entry = state.bestiary.find(b => b.name.trim().toLowerCase() === baseName.toLowerCase());
+  if (!entry) return; // Base Name doesn't match any known bestiary entry — leave it tagged Enemy, but nothing to restrict against
+  character.__mob = true;
+  character.__bestiaryId = entry.id;
+  character.__abilities = [entry.ability1, entry.ability2].filter(ab => ab && ab.trim() && ab.trim() !== '-');
+  character.__undead = UNDEAD_BESTIARY_NAMES.includes(entry.name.trim().toLowerCase());
+}
+
 function spawnMob(entry) {
   state.mobCounter += 1;
   const displayName = state.characters.some(c => c['Name'] === entry.name)
     ? `${entry.name} (${state.mobCounter})`
     : entry.name;
-  const headers = state.headers.length ? state.headers : DEFAULT_HEADERS.slice();
-  if (!state.headers.length) state.headers = headers;
+  if (!state.headers.length) state.headers = DEFAULT_HEADERS.slice();
+  ensureEntityColumns();
   const c = {};
-  headers.forEach(h => { c[h] = ''; });
+  state.headers.forEach(h => { c[h] = ''; });
   const hp = String(num(entry.hp, 1));
   Object.assign(c, {
     'Name': displayName,
@@ -292,6 +333,8 @@ function spawnMob(entry) {
     'Equipped weapon': 'None',
     'Equipped armour': 'None',
     'Equipped trinket': 'None',
+    'Entity Type': 'Enemy',
+    'Base Name': entry.name,
   });
   c.__mob = true;
   c.__bestiaryId = entry.id;
@@ -450,6 +493,11 @@ document.getElementById('sheet-upload').addEventListener('change', (e) => {
       const { headers, objs } = rowsToObjects(rows);
       state.headers = headers;
       state.characters = objs;
+      ensureEntityColumns(); // adds Entity Type/Base Name + defaults everyone to Player if this is an older-format sheet
+      state.characters.forEach(c => {
+        if (!(c['Entity Type'] || '').trim()) c['Entity Type'] = 'Player';
+        reconstructMobMetadata(c); // restores ability-gating for enemies from a previously exported sheet
+      });
       state.characters.forEach(syncForcedStatus); // e.g. anyone already listed wearing Cursed/Sealed/Molten Armour
       state.attackerIdx = null;
       state.targetIdx = null;
@@ -559,7 +607,11 @@ document.getElementById('bestiary-upload').addEventListener('change', (e) => {
         drop2: o['Drop 2'] || '',
         value: o.Value || '',
       }));
+      state.characters.forEach(reconstructMobMetadata); // refresh ability lists for already-loaded enemies against the new bestiary
       renderBestiaryList();
+      renderRoster();
+      renderActionList();
+      renderActionDetail();
     } catch (err) {
       alert('Could not read that bestiary CSV: ' + err.message);
     }
