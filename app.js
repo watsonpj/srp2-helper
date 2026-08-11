@@ -452,6 +452,14 @@ function hasBookmark(character) {
 // outright regardless of equipment, including Return, Cure, and Rest. (If you
 // want Reload/Prepare Spell exempted from this — since a Zombie mid-reload is
 // a reasonable ask — that's a one-line change, just say so.)
+// A couple of action names are always available regardless of their Type
+// column, because the "no item link + not Miscellaneous = bestiary-only"
+// heuristic below assumes only Miscellaneous actions are ever innate — which
+// broke the moment Rest became a proper HealRange roll instead of a no-roll
+// Miscellaneous action. Anything added here bypasses both the item-link and
+// type checks (but still respects the Zombie restriction above it).
+const ALWAYS_INNATE_ACTION_NAMES = ['rest'];
+
 function isActionAvailableToPlayer(action, character) {
   if (hasStatus(character, 'Zombie') && !action.type.startsWith('Damage')) {
     return false;
@@ -459,6 +467,9 @@ function isActionAvailableToPlayer(action, character) {
   const nameLower = action.name.trim().toLowerCase();
   if (nameLower === 'return') {
     return hasBookmark(character);
+  }
+  if (ALWAYS_INNATE_ACTION_NAMES.includes(nameLower)) {
+    return true;
   }
   if (state._itemGrantedActionNames.has(nameLower)) {
     return getGrantedActionNames(character).has(nameLower);
@@ -953,7 +964,7 @@ function formulaText(a) {
   const n = a.rollNumber === 'entityNum' ? '(per target)' : (num(a.rollNumber, 0));
   if (a.type === 'Miscellaneous' || a.type === 'StatusClear') return 'No dice roll for this action.';
   if (n === 0 && num(a.rollMin) === 0 && num(a.rollMax) === 0) return 'No dice roll — effect only.';
-  return `Roll ${n}× [${a.rollMin} to ${a.rollMax}]${a.type.startsWith('Damage') ? ', then + Attack Bonus − Defence Bonus' : ''}`;
+  return `Roll ${n} × [${a.rollMin} to ${a.rollMax}]${a.type.startsWith('Damage') ? ', then + Attack Bonus − Defence Bonus' : ''}`;
 }
 
 function renderActionDetail() {
@@ -1137,14 +1148,6 @@ function performAction(a) {
       } else {
         resultLine = 'No marked location to return to.';
       }
-    } else if (nameLower === 'rest' && attacker) {
-      const healed = Math.min(1, effectiveMaxHP(attacker) - num(attacker['Current HP']));
-      if (healed > 0) { attacker['Current HP'] = String(num(attacker['Current HP']) + healed); miscCls = 'heal'; }
-      resultLine = healed > 0 ? `+${healed} HP.` : 'Already at full HP.';
-      if (hasStatus(attacker, 'Poison')) {
-        attacker['Status'] = 'OK';
-        bookmarkNote = `${attacker['Name']}'s Poison clears after resting.`;
-      }
     }
 
     if (a.type === 'StatusClear' && /^StatusOK$/i.test(a.effect || '') && target) {
@@ -1156,6 +1159,16 @@ function performAction(a) {
         target['Status'] = 'OK';
       }
     }
+
+    // When there's no dice roll and nothing more specific already claimed the
+    // headline (Return/Rest/Cure above), a weapon/item transform IS the result
+    // of the action — show it as the main line rather than burying it as a note.
+    let transformPromoted = false;
+    if (transformNote && resultLine === 'No roll — narrative action.') {
+      resultLine = transformNote;
+      transformPromoted = true;
+    }
+
     addLogEntry({
       cls: miscCls,
       atk: attacker ? attacker['Name'] : '—',
@@ -1163,7 +1176,7 @@ function performAction(a) {
       tgt: target ? target['Name'] : null,
       rollLine: '',
       resultLine,
-      note: [cureNote, bookmarkNote, a.effect && !/^StatusOK$/i.test(a.effect) ? `Effect: ${a.effect}` : '', transformNote, itemNote].filter(Boolean).join(' — '),
+      note: [cureNote, bookmarkNote, a.effect && !/^StatusOK$/i.test(a.effect) ? `Effect: ${a.effect}` : '', transformPromoted ? '' : transformNote, itemNote].filter(Boolean).join(' — '),
     });
     renderRoster(); renderDetail(); renderActionList(); renderActionDetail();
     return;
@@ -1251,6 +1264,14 @@ function performAction(a) {
       const reviveNote = checkDefeatOrRevive(target);
       if (reviveNote) healNegatedNote = [healNegatedNote, reviveNote].filter(Boolean).join(' ');
     }
+    // Rest is now a proper HealRange roll (1 HP, guaranteed), but it also clears
+    // Poison on whoever's resting — matching "until player rests" from the rules,
+    // same behaviour as before, just hooked into the roll path instead of the
+    // old no-roll one now that Rest actually rolls dice.
+    if (a.name.trim().toLowerCase() === 'rest' && attacker && hasStatus(attacker, 'Poison')) {
+      attacker['Status'] = 'OK';
+      healNegatedNote = [healNegatedNote, `${attacker['Name']}'s Poison clears after resting.`].filter(Boolean).join(' ');
+    }
     resultLine = `+${total} HP`;
     note = healNegatedNote;
   } else {
@@ -1287,7 +1308,7 @@ function performAction(a) {
     atk: attacker ? attacker['Name'] : '—',
     action: a.name,
     tgt: target ? target['Name'] : '—',
-    rollLine: count > 0 ? `${count}× [${min}–${max}]${targetBurned ? ' +1 Burned' : ''} → [${rolls.join(', ')}] = ${rollSum}   ${isHeal ? '' : `(+${atkBonus} ATK ${punishArmour ? '+' : '−'}${defBonus} DEF)`}` : 'No dice — flat effect.',
+    rollLine: count > 0 ? `${count} × [${min}–${max}]${targetBurned ? ' +1 Burned' : ''} → [${rolls.join(', ')}] = ${rollSum}   ${isHeal ? '' : `(+${atkBonus} ATK ${punishArmour ? '+' : '−'}${defBonus} DEF)`}` : 'No dice — flat effect.',
     resultLine,
     note: [note, ...retaliationNotes, contagionNote, effectNote, transformNote, itemNote].filter(Boolean).join(' — '),
   });
