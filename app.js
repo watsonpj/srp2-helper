@@ -1219,19 +1219,27 @@ function performAction(a) {
   let total;
   let armourNote = '';
   let undeadNote = '';
+  let perHitValues = null; // only populated for multi-hit damage actions, drives the multi-line display
   if (isHeal) {
     total = Math.max(0, rollSum); // heals don't apply attack/defence bonuses
   } else {
-    if (ignoreArmour) {
-      total = rollSum + atkBonus;
-      armourNote = 'Armour ignored.';
-    } else if (punishArmour) {
-      total = rollSum + atkBonus + defBonus;
-      armourNote = "Target's Defence Bonus added to damage instead of reducing it.";
-    } else {
-      total = rollSum + atkBonus - defBonus;
-    }
-    total = Math.max(0, total);
+    // Attack/Defence Bonus apply per individual roll, not once to the summed
+    // total — each hit is floored at 0 on its own before the hits are added
+    // together, so a hit that doesn't clear the target's Defence Bonus
+    // contributes nothing, rather than being propped up by a harder-hitting
+    // hit elsewhere in the same attack.
+    const perHit = (die) => {
+      let v;
+      if (ignoreArmour) v = die + atkBonus;
+      else if (punishArmour) v = die + atkBonus + defBonus;
+      else v = die + atkBonus - defBonus;
+      return Math.max(0, v);
+    };
+    if (ignoreArmour) armourNote = 'Armour ignored.';
+    else if (punishArmour) armourNote = "Target's Defence Bonus added to damage instead of reducing it.";
+
+    if (rolls.length > 1) perHitValues = rolls.map(perHit);
+    total = rolls.length > 1 ? perHitValues.reduce((s, v) => s + v, 0) : perHit(rolls[0] ?? 0);
 
     const atkEffects = getEquippedEffects(attacker);
     if (atkEffects.doubleVsUndead && isUndead(target)) {
@@ -1295,12 +1303,33 @@ function performAction(a) {
   const transformNote = applyTransform(a, attacker);
   const itemNote = consumeOrBreakSourceItem(a, attacker);
 
+  // Multi-hit damage actions get one line per hit, each showing that hit's own
+  // roll and the modifiers applied to it — single-hit and heal actions keep
+  // the existing combined one-liner, since there's nothing per-hit to show.
+  let rollLine = '';
+  let rollLines = null;
+  if (count > 0) {
+    if (perHitValues) {
+      const modText = ignoreArmour
+        ? `+${atkBonus} ATK (armour ignored)`
+        : punishArmour
+          ? `+${atkBonus} ATK +${defBonus} DEF`
+          : `+${atkBonus} ATK −${defBonus} DEF`;
+      rollLines = rolls.map((die, i) => `#${i + 1}: ${min}–${max}${targetBurned ? ' +1 Burned' : ''} = ${die}   ${modText} → ${perHitValues[i]}`);
+    } else {
+      rollLine = `${count} × [${min}–${max}]${targetBurned ? ' +1 Burned' : ''} → [${rolls.join(', ')}] = ${rollSum}   ${isHeal ? '' : `(+${atkBonus} ATK ${punishArmour ? '+' : '−'}${defBonus} DEF)`}`;
+    }
+  } else {
+    rollLine = 'No dice — flat effect.';
+  }
+
   addLogEntry({
     cls,
     atk: attacker ? attacker['Name'] : '—',
     action: a.name,
     tgt: target ? target['Name'] : '—',
-    rollLine: count > 0 ? `${count} × [${min}–${max}]${targetBurned ? ' +1 Burned' : ''} → [${rolls.join(', ')}] = ${rollSum}   ${isHeal ? '' : `(+${atkBonus} ATK ${punishArmour ? '+' : '−'}${defBonus} DEF)`}` : 'No dice — flat effect.',
+    rollLine,
+    rollLines,
     resultLine,
     transform: transformNote,
     note: [note, ...retaliationNotes, contagionNote, effectNote, itemNote].filter(Boolean).join(' — '),
@@ -1331,7 +1360,9 @@ function addLogEntry(entry) {
 // attack, like Chain Lash — same style either way), and any other note in italics.
 function toBBCode(e) {
   const lines = [e.bbTitle];
-  if (e.rollLine) {
+  if (e.rollLines) {
+    e.rollLines.forEach(l => lines.push(`[size=1][color=#8b8f9c]${l}[/color][/size]`));
+  } else if (e.rollLine) {
     lines.push(`[size=1][color=#8b8f9c]${e.rollLine}[/color][/size]`);
   }
   if (e.resultLine) {
@@ -1378,7 +1409,7 @@ function renderLedger() {
         <span class="ledger-title">${escapeHtml(e.title)}</span>
         <span class="ledger-turn">#${e.turn} · ${e.ts.toLocaleTimeString()}</span>
       </div>
-      ${e.rollLine ? `<div class="ledger-roll">${escapeHtml(e.rollLine)}</div>` : ''}
+      ${e.rollLines ? e.rollLines.map(l => `<div class="ledger-roll">${escapeHtml(l)}</div>`).join('') : (e.rollLine ? `<div class="ledger-roll">${escapeHtml(e.rollLine)}</div>` : '')}
       <div class="ledger-result ${e.cls}">${escapeHtml(e.resultLine)}</div>
       ${e.transform ? `<div class="ledger-transform">${escapeHtml(e.transform)}</div>` : ''}
       ${e.note ? `<div class="ledger-note">${escapeHtml(e.note)}</div>` : ''}
