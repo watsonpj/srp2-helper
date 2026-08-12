@@ -396,6 +396,17 @@ document.getElementById('toggle-bestiary-btn').addEventListener('click', () => {
   if (picker.classList.contains('open')) renderBestiaryList();
 });
 
+// Picks one of the current mob attacker's abilities at random (uniformly —
+// the bestiary only ever has up to two, so this is a straight coinflip
+// whenever there are two). This is purely informational: it doesn't select
+// the action for you, just tells you which one to use.
+document.getElementById('randomize-ability-btn').addEventListener('click', () => {
+  const attacker = state.characters[state.attackerIdx];
+  if (!attacker || !attacker.__mob || attacker.__abilities.length < 2) return;
+  const pick = attacker.__abilities[Math.floor(Math.random() * attacker.__abilities.length)];
+  document.getElementById('ability-randomizer-result').textContent = `→ ${pick}`;
+});
+
 document.getElementById('bestiary-search').addEventListener('input', (e) => {
   state.bestiaryFilter = e.target.value;
   renderBestiaryList();
@@ -746,6 +757,7 @@ function renderDetail() {
   const hpPct = clamp((num(c['Current HP']) / Math.max(1, maxHp)) * 100, 0, 100);
   const gearBonus = getEquipmentStatBonus(c);
   const statusBonus = getStatusStatBonus(c);
+  const bestiaryEntry = c.__mob ? state.bestiary.find(b => b.id === c.__bestiaryId) : null;
 
   const editableStat = (key, label, gearKey) => {
     const base = num(c[key], 0);
@@ -847,6 +859,20 @@ function renderDetail() {
       ${itemSelect('Inventory slot 5','Slot 5', null)}
       ${itemSelect('Inventory slot 6','Slot 6', null)}
     </div>
+
+    ${bestiaryEntry ? `
+    <div class="section-label">Bestiary</div>
+    <div class="field-row">
+      <span class="k">Drops</span>
+      <span style="font-size:12px;color:var(--text-muted);">${escapeHtml(bestiaryEntry.drop1 || '—')} (70%) · ${escapeHtml(bestiaryEntry.drop2 || '—')} (30%)</span>
+    </div>
+    <div class="field-row">
+      <span class="k"></span>
+      <div style="display:flex;align-items:center;gap:10px;">
+        <button class="btn small" id="roll-drop-btn" type="button">Roll drop</button>
+        <span class="randomizer-result" id="drop-roll-result"></span>
+      </div>
+    </div>` : ''}
   `;
 
   body.querySelectorAll('input[data-key], select[data-key]').forEach(el => {
@@ -887,6 +913,23 @@ function renderDetail() {
       renderRoster();
     });
   }
+
+  // Drop roll: Drop 1 at 70%, Drop 2 at 30% — purely informational, shown
+  // inline rather than logged, since a drop isn't a combat action.
+  const dropBtn = document.getElementById('roll-drop-btn');
+  if (dropBtn) {
+    dropBtn.addEventListener('click', () => {
+      const has1 = !!(bestiaryEntry.drop1 && bestiaryEntry.drop1.trim() && bestiaryEntry.drop1.trim() !== '-');
+      const has2 = !!(bestiaryEntry.drop2 && bestiaryEntry.drop2.trim() && bestiaryEntry.drop2.trim() !== '-');
+      const resultEl = document.getElementById('drop-roll-result');
+      let pick;
+      if (has1 && has2) pick = Math.random() < 0.7 ? bestiaryEntry.drop1 : bestiaryEntry.drop2;
+      else if (has1) pick = bestiaryEntry.drop1;
+      else if (has2) pick = bestiaryEntry.drop2;
+      else pick = null;
+      resultEl.textContent = pick ? `→ ${pick}` : 'No drops on file.';
+    });
+  }
 }
 
 // ---------- Actions rendering ----------
@@ -917,6 +960,7 @@ function renderActionList() {
   renderTypeTabs();
   const list = document.getElementById('action-list');
   const attacker = state.characters[state.attackerIdx];
+  document.getElementById('ability-randomizer').style.display = 'none'; // re-shown below only for a mob with 2+ abilities
 
   const renderRows = (actions) => {
     list.innerHTML = '';
@@ -938,6 +982,15 @@ function renderActionList() {
     const filtered = state.actions.filter(a => abilityNames.includes(a.name.toLowerCase()));
     document.getElementById('actions-count').textContent = `${attacker['Name']}'s abilities`;
     if (state.selectedActionId !== null && !filtered.some(a => a.id === state.selectedActionId)) state.selectedActionId = null;
+
+    const randomizer = document.getElementById('ability-randomizer');
+    if (attacker.__abilities.length >= 2) {
+      randomizer.style.display = 'flex';
+      document.getElementById('ability-randomizer-result').textContent = '';
+    } else {
+      randomizer.style.display = 'none';
+    }
+
     if (!filtered.length) {
       list.innerHTML = '<div class="empty-state">This monster has no usable abilities on file.</div>';
       return;

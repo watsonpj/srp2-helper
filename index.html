@@ -282,6 +282,11 @@
 
   /* ---------- Actions panel ---------- */
   .type-tabs{display:flex;flex-wrap:wrap;gap:6px;padding:10px 14px;border-bottom:1px solid var(--border-soft);}
+  .ability-randomizer{
+    display:flex;align-items:center;gap:10px;padding:10px 14px;border-bottom:1px solid var(--border-soft);
+    background:var(--surface-2);
+  }
+  .randomizer-result{font-family:'JetBrains Mono',monospace;font-size:12.5px;color:var(--gold);font-weight:700;}
   .type-tab{
     font-family:'JetBrains Mono',monospace;
     font-size:11px;
@@ -493,6 +498,10 @@
   <div class="panel" id="actions-panel">
     <div class="panel-head"><h2>Action</h2><span class="mono" id="actions-count" style="font-size:11px;color:var(--text-dim);"></span></div>
     <div class="type-tabs" id="type-tabs"></div>
+    <div class="ability-randomizer" id="ability-randomizer" style="display:none;">
+      <button class="btn small" id="randomize-ability-btn" type="button">Randomize ability</button>
+      <span class="randomizer-result" id="ability-randomizer-result"></span>
+    </div>
     <div class="action-list" id="action-list"></div>
     <div class="action-detail" id="action-detail">
       <div class="empty-state">Select an action to see its formula.</div>
