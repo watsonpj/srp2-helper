@@ -1182,7 +1182,7 @@ function performAction(a, opts = {}) {
   if (a.type === 'Miscellaneous' || a.type === 'StatusClear') {
     const transformNote = opts.skipTransform ? null : applyTransform(a, attacker);
     const itemNote = consumeOrBreakSourceItem(a, attacker);
-    let resultLine = a.type === 'StatusClear' ? 'Status effects cleared.' : 'No roll — narrative action.';
+    let resultLine = a.type === 'StatusClear' ? 'Status effects cleared.' : '';
     let cureNote = '';
     let bookmarkNote = '';
     let miscCls = 'info';
@@ -1452,6 +1452,11 @@ function addLogEntry(entry) {
   state.logIdCounter = (state.logIdCounter || 0) + 1;
   state.log.push({ ...entry, title, bbTitle, id: state.logIdCounter, turn: state.turn, ts: new Date() });
   renderLedger();
+  // The ledger is column-reverse (newest visually on top, chronological in the DOM),
+  // so scrollTop 0 is exactly where the newest entry sits — reset it here so a fresh
+  // roll is always immediately visible, even if the GM had scrolled down into older history.
+  const ledgerBody = document.getElementById('ledger-body');
+  if (ledgerBody) ledgerBody.scrollTop = 0;
 }
 
 // Builds a BBCode block (for XenForo-style forums) from a ledger entry:
@@ -1512,7 +1517,7 @@ function renderLedger() {
         <span class="ledger-turn">#${e.turn} · ${e.ts.toLocaleTimeString()}</span>
       </div>
       ${e.rollLines ? e.rollLines.map(l => `<div class="ledger-roll">${escapeHtml(l)}</div>`).join('') : (e.rollLine ? `<div class="ledger-roll">${escapeHtml(e.rollLine)}</div>` : '')}
-      <div class="ledger-result ${e.cls}">${escapeHtml(e.resultLine)}</div>
+      ${e.resultLine ? `<div class="ledger-result ${e.cls}">${escapeHtml(e.resultLine)}</div>` : ''}
       ${e.transform ? `<div class="ledger-transform">${escapeHtml(e.transform)}</div>` : ''}
       ${e.note ? `<div class="ledger-note">${escapeHtml(e.note)}</div>` : ''}
       <div class="ledger-actions">
