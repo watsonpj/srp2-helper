@@ -1171,7 +1171,7 @@ function applyRetaliation(target, attacker) {
   return notes;
 }
 
-function performAction(a) {
+function performAction(a, opts = {}) {
   state.turn += 1;
   const attacker = state.characters[state.attackerIdx];
   const target = state.characters[state.targetIdx];
@@ -1180,7 +1180,7 @@ function performAction(a) {
   let count = a.rollNumber === 'entityNum' ? 1 : num(a.rollNumber, 0); // single target only, so entityNum -> 1
 
   if (a.type === 'Miscellaneous' || a.type === 'StatusClear') {
-    const transformNote = applyTransform(a, attacker);
+    const transformNote = opts.skipTransform ? null : applyTransform(a, attacker);
     const itemNote = consumeOrBreakSourceItem(a, attacker);
     let resultLine = a.type === 'StatusClear' ? 'Status effects cleared.' : 'No roll — narrative action.';
     let cureNote = '';
@@ -1200,6 +1200,19 @@ function performAction(a) {
         bookmarkNote = `${attacker['Name']}'s bookmark is cleared.`;
       } else {
         resultLine = 'No marked location to return to.';
+      }
+    } else if (nameLower === 'unstable magick' && attacker) {
+      const pool = state.actions.filter(x => x.id >= 18 && x.id <= 54);
+      const chosen = pool.length ? pool[Math.floor(Math.random() * pool.length)] : null;
+      bookmarkNote = chosen
+        ? `${attacker['Name']} channels a random spell: ${chosen.name}!`
+        : `${attacker['Name']}'s spell fizzles — no eligible spell found.`;
+      if (chosen) {
+        // Resolved as its own separate ledger entry right after this one, with its own
+        // dice/effects/everything — but its Transform (if it has one) is suppressed, so
+        // a coincidentally-picked melee ability can't hijack the Spellbook's own
+        // Unstable/Tapped weapon-state cycle out from under it.
+        setTimeout(() => performAction(chosen, { skipTransform: true }), 0);
       }
     }
 
@@ -1262,6 +1275,42 @@ function performAction(a) {
     rolls.push(die);
   }
   const rollSum = rolls.reduce((s, v) => s + v, 0);
+
+  // Cursed Magick only, per its own description ("prone to failure") — a negative
+  // roll means the spell misfires into a heal instead of damage. This is checked
+  // against the raw die, before Attack/Defence Bonus, and is intentionally kept
+  // as an isolated early exit so it can't affect how any other action's damage
+  // or healing is calculated.
+  if (a.name.trim().toLowerCase() === 'cursed magick' && rolls.length && rolls[0] < 0) {
+    const healAmount = Math.abs(rolls[0]);
+    let healNote = '';
+    let finalHeal = healAmount;
+    if (target && (hasStatus(target, 'Parasite') || hasStatus(target, 'Vampire'))) {
+      const cause = hasStatus(target, 'Parasite') ? 'Parasite' : 'Vampire';
+      healNote = `${target['Name']}'s ${cause} status negates the healing.`;
+      finalHeal = 0;
+    }
+    if (target) {
+      const newHP = clamp(num(target['Current HP']) + finalHeal, 0, effectiveMaxHP(target) || finalHeal);
+      target['Current HP'] = String(newHP);
+      const reviveNote = checkDefeatOrRevive(target);
+      if (reviveNote) healNote = [healNote, reviveNote].filter(Boolean).join(' ');
+    }
+    const misfireTransformNote = opts.skipTransform ? null : applyTransform(a, attacker);
+    const misfireItemNote = consumeOrBreakSourceItem(a, attacker);
+    addLogEntry({
+      cls: 'heal',
+      atk: attacker ? attacker['Name'] : '—',
+      action: a.name,
+      tgt: target ? target['Name'] : '—',
+      rollLine: `1 × [${min}–${max}] → [${rolls[0]}]   (misfire — negative roll heals instead of harming)`,
+      resultLine: `+${finalHeal} HP`,
+      transform: misfireTransformNote,
+      note: [healNote, misfireItemNote].filter(Boolean).join(' — '),
+    });
+    renderRoster(); renderDetail(); renderActionList(); renderActionDetail();
+    return;
+  }
 
   const atkBonus = num(attacker ? effectiveStat(attacker, 'Attack Bonus') : 0);
   const defBonus = num(target ? effectiveStat(target, 'Defence Bonus') : 0);
