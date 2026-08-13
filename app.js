@@ -1456,7 +1456,11 @@ function addLogEntry(entry) {
   // so scrollTop 0 is exactly where the newest entry sits — reset it here so a fresh
   // roll is always immediately visible, even if the GM had scrolled down into older history.
   const ledgerBody = document.getElementById('ledger-body');
-  if (ledgerBody) ledgerBody.scrollTop = 0;
+  // Column-reverse means scrollTop=0 actually shows the OLDEST entry, not the
+  // newest — verified empirically, not assumed. The newest is at the most
+  // negative scrollTop, i.e. -(scrollHeight - clientHeight), so that's what
+  // needs setting here to actually jump to a fresh roll.
+  if (ledgerBody) ledgerBody.scrollTop = -(ledgerBody.scrollHeight - ledgerBody.clientHeight);
 }
 
 // Builds a BBCode block (for XenForo-style forums) from a ledger entry:
