@@ -219,6 +219,23 @@ function effectiveMaxHP(character) {
   return num(character['Max HP'], 0) + getEquipmentStatBonus(character).hp;
 }
 
+// Builds the report shown by Inspect: status, attributes (effective totals —
+// the same numbers combat math actually uses, gear/status modifiers and all,
+// not just whatever's typed into the base fields), and equipped gear. Doesn't
+// touch inventory contents — Inspect reveals what's worn/wielded, not carried.
+function buildInspectLines(target) {
+  if (!target) return [];
+  const atk = effectiveStat(target, 'Attack Bonus');
+  const def = effectiveStat(target, 'Defence Bonus');
+  const spd = effectiveStat(target, 'Speed Bonus');
+  return [
+    `Status: ${target['Status'] || 'OK'}`,
+    `HP: ${target['Current HP'] ?? '?'} / ${effectiveMaxHP(target)}`,
+    `Attack ${atk} · Defence ${def} · Speed ${spd}`,
+    `Weapon: ${target['Equipped weapon'] || 'None'} · Armour: ${target['Equipped armour'] || 'None'} · Trinket: ${target['Equipped trinket'] || 'None'}`,
+  ];
+}
+
 // Combines the effects of a character's equipped armour + trinket (weapon isn't
 // consulted here — weapon damage/transform already comes straight from the
 // selected action's own columns).
@@ -1031,7 +1048,7 @@ function renderActionDetail() {
   const target = state.characters[state.targetIdx];
 
   const needsAttacker = a.type !== 'Miscellaneous';
-  const needsTarget = a.type !== 'Miscellaneous';
+  const needsTarget = a.type !== 'Miscellaneous' || a.name.trim().toLowerCase() === 'inspect';
 
   wrap.innerHTML = `
     <h4>${escapeHtml(a.name)}</h4>
@@ -1186,9 +1203,16 @@ function performAction(a, opts = {}) {
     let cureNote = '';
     let bookmarkNote = '';
     let miscCls = 'info';
+    let infoLines = null;
     const nameLower = a.name.trim().toLowerCase();
 
-    if (nameLower === 'mark location' && attacker) {
+    if (nameLower === 'inspect') {
+      if (target) {
+        infoLines = buildInspectLines(target);
+      } else {
+        resultLine = 'No target selected to inspect.';
+      }
+    } else if (nameLower === 'mark location' && attacker) {
       attacker['Bookmark'] = attacker['Current location'] || '';
       bookmarkNote = `${attacker['Name']} marks ${attacker['Bookmark'] || 'this location'} — Return is now available.`;
     } else if (nameLower === 'return' && attacker) {
@@ -1234,6 +1258,7 @@ function performAction(a, opts = {}) {
       rollLine: '',
       resultLine,
       transform: transformNote,
+      infoLines,
       note: [cureNote, bookmarkNote, a.effect && !/^StatusOK$/i.test(a.effect) ? `Effect: ${a.effect}` : '', itemNote].filter(Boolean).join(' — '),
     });
     renderRoster(); renderDetail(); renderActionList(); renderActionDetail();
@@ -1480,6 +1505,7 @@ function toBBCode(e) {
     const color = e.cls === 'heal' ? '#2e7d4f' : (e.cls === 'dmg' ? '#b0362b' : null);
     lines.push(color ? `[b][color=${color}]${e.resultLine}[/color][/b]` : `[b]${e.resultLine}[/b]`);
   }
+  if (e.infoLines) e.infoLines.forEach(l => lines.push(`[i]${l}[/i]`));
   if (e.transform) lines.push(`[i][color=#6f93c9]${e.transform}[/color][/i]`);
   if (e.note) lines.push(`[i]${e.note}[/i]`);
   return lines.join('\n');
@@ -1522,6 +1548,7 @@ function renderLedger() {
       </div>
       ${e.rollLines ? e.rollLines.map(l => `<div class="ledger-roll">${escapeHtml(l)}</div>`).join('') : (e.rollLine ? `<div class="ledger-roll">${escapeHtml(e.rollLine)}</div>` : '')}
       ${e.resultLine ? `<div class="ledger-result ${e.cls}">${escapeHtml(e.resultLine)}</div>` : ''}
+      ${e.infoLines ? `<div class="ledger-info">${e.infoLines.map(l => escapeHtml(l)).join('<br>')}</div>` : ''}
       ${e.transform ? `<div class="ledger-transform">${escapeHtml(e.transform)}</div>` : ''}
       ${e.note ? `<div class="ledger-note">${escapeHtml(e.note)}</div>` : ''}
       <div class="ledger-actions">
