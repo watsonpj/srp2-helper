@@ -1308,9 +1308,13 @@ function performAction(a, opts = {}) {
   const targetBurned = isDamageType && hasStatus(target, 'Burned');
 
   // Charged: adds +1 to the attack, discharges (clears) after use, and costs
-  // the attacker 1 HP themselves. Parasite: adds +1 to the attack, persists.
-  // Both are flat additions to the final total, not per-die like Burned.
+  // the attacker 1 HP themselves — a flat addition to the final total.
+  // Parasite: modeled as +1 Attack Bonus rather than a flat damage add, per
+  // its own alternate phrasing — since Attack Bonus already applies per hit
+  // (not once per attack), this means Parasite scales with hit count on
+  // multi-hit weapons (Flurry Attack etc.), unlike Charged.
   let outgoingBonus = 0;
+  let parasiteAttackBonus = 0;
   const outgoingNotes = [];
   if (isDamageType && attacker) {
     if (hasStatus(attacker, 'Charged')) {
@@ -1325,8 +1329,8 @@ function performAction(a, opts = {}) {
       }
     }
     if (hasStatus(attacker, 'Parasite')) {
-      outgoingBonus += 1;
-      outgoingNotes.push(`${attacker['Name']}'s Parasite status adds 1 damage.`);
+      parasiteAttackBonus = 1;
+      outgoingNotes.push(`${attacker['Name']}'s Parasite status adds 1 Attack Bonus per hit.`);
     }
   }
 
@@ -1375,7 +1379,7 @@ function performAction(a, opts = {}) {
     return;
   }
 
-  const atkBonus = num(attacker ? effectiveStat(attacker, 'Attack Bonus') : 0);
+  const atkBonus = num(attacker ? effectiveStat(attacker, 'Attack Bonus') : 0) + parasiteAttackBonus;
   const defBonus = num(target ? effectiveStat(target, 'Defence Bonus') : 0);
 
   let ignoreArmour = /ignorearmour/i.test(a.effect || '');
