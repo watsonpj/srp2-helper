@@ -27,6 +27,7 @@ const state = {
   actions: DEFAULT_ACTIONS,
   items: DEFAULT_ITEMS,
   bestiary: DEFAULT_BESTIARY,
+  statuses: DEFAULT_STATUSES,
   attackerIdx: null,
   targetIdx: null,
   selectedActionId: null,
@@ -677,6 +678,27 @@ document.getElementById('bestiary-upload').addEventListener('change', (e) => {
   reader.readAsText(file);
 });
 
+document.getElementById('statuses-upload').addEventListener('change', (e) => {
+  const file = e.target.files[0];
+  if (!file) return;
+  const reader = new FileReader();
+  reader.onload = () => {
+    try {
+      const rows = parseCSV(reader.result);
+      const { objs } = rowsToObjects(rows);
+      state.statuses = objs.filter(o => o.Name).map(o => ({
+        id: num(o.ID, 0),
+        name: o.Name || '',
+        description: o.Description || '',
+      }));
+      renderDetail(); // Status field is a dropdown built from this list
+    } catch (err) {
+      alert('Could not read that statuses CSV: ' + err.message);
+    }
+  };
+  reader.readAsText(file);
+});
+
 document.getElementById('export-btn').addEventListener('click', () => {
   const csv = toCSV(state.headers, state.characters);
   const blob = new Blob([csv], { type: 'text/csv' });
@@ -816,6 +838,25 @@ function renderDetail() {
     </div>`;
   };
 
+  // Same "preserve anything unrecognized" pattern as itemSelect — a sheet
+  // could already have a status that predates the Statuses list, or a typo,
+  // and this makes sure switching to a dropdown never silently discards it.
+  const statusSelect = () => {
+    const current = (c['Status'] ?? '').trim();
+    const isKnown = state.statuses.some(s => s.name.trim().toLowerCase() === current.toLowerCase());
+    let options = '';
+    if (!isKnown && current) options += `<option value="${escapeAttr(current)}" selected>${escapeHtml(current)} (unrecognized)</option>`;
+    state.statuses.forEach(s => {
+      const sel = s.name.trim().toLowerCase() === current.toLowerCase() ? 'selected' : '';
+      options += `<option value="${escapeAttr(s.name)}" ${sel} title="${escapeAttr(s.description || '')}">${escapeHtml(s.name)}</option>`;
+    });
+    return `
+    <div class="field-row">
+      <span class="k">Status</span>
+      <select data-key="Status">${options}</select>
+    </div>`;
+  };
+
   const equipField = (key, label) => `
     <div class="field-row">
       <span class="k">${label}</span>
@@ -846,10 +887,7 @@ function renderDetail() {
     </div>
 
     <div class="section-label">Status</div>
-    <div class="field-row">
-      <span class="k">Status</span>
-      <input type="text" data-key="Status" value="${escapeAttr(c['Status'] ?? '')}">
-    </div>
+    ${statusSelect()}
     ${hasStatus(c, 'Poison') ? `
     <div class="field-row">
       <span class="k"></span>
