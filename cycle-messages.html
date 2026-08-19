@@ -1,0 +1,178 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>SRP2 — Cycle Messages</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@500;600;700&family=JetBrains+Mono:wght@400;500;700&family=Inter:wght@400;500;600&display=swap" rel="stylesheet">
+<style>
+  :root{
+    --bg:#14161c; --surface:#1c1f28; --surface-2:#232733; --surface-3:#2a2f3d;
+    --border:#323848; --border-soft:#282c38;
+    --text:#e7e5df; --text-muted:#8b91a3; --text-dim:#5c6178;
+    --gold:#d4a544; --gold-dim:#8a713a; --red:#c1554a; --red-dim:#5a352f;
+    --green:#5fa07a; --green-dim:#345043; --blue:#6f93c9;
+    --radius:6px; font-size:15px;
+  }
+  *{box-sizing:border-box;}
+  html,body{margin:0;padding:0;}
+  body{background:var(--bg);color:var(--text);font-family:'Inter',system-ui,sans-serif;min-height:100vh;}
+  ::selection{background:var(--gold-dim);color:var(--text);}
+
+  header{
+    border-bottom:1px solid var(--border);
+    padding:18px 24px;
+    display:flex; align-items:center; justify-content:space-between; gap:16px; flex-wrap:wrap;
+    background:linear-gradient(180deg, rgba(212,165,68,0.05), transparent);
+  }
+  .brand{display:flex;align-items:baseline;gap:10px;}
+  .brand .mark{font-family:'Space Grotesk',sans-serif;font-weight:700;font-size:20px;letter-spacing:0.02em;color:var(--text);}
+  .brand .mark .accent{color:var(--gold);}
+  .brand .sub{font-family:'JetBrains Mono',monospace;font-size:11px;color:var(--text-dim);letter-spacing:0.08em;text-transform:uppercase;}
+  .nav-link{
+    font-family:'JetBrains Mono',monospace;font-size:12px;color:var(--blue);text-decoration:none;
+    border:1px solid var(--border);border-radius:var(--radius);padding:7px 12px;
+  }
+  .nav-link:hover{border-color:var(--blue);background:var(--surface-2);}
+  .header-actions{display:flex;gap:8px;flex-wrap:wrap;align-items:center;}
+
+  button, .btn{
+    font-family:'Inter',sans-serif;font-size:13px;font-weight:600;color:var(--text);
+    background:var(--surface-2);border:1px solid var(--border);border-radius:var(--radius);
+    padding:8px 14px;cursor:pointer;transition:border-color .15s, background .15s, transform .05s;letter-spacing:0.01em;
+  }
+  button:hover, .btn:hover{border-color:var(--gold-dim);background:var(--surface-3);}
+  button:active, .btn:active{transform:translateY(1px);}
+  button:disabled{opacity:0.4;cursor:not-allowed;}
+  button.primary{background:var(--gold);border-color:var(--gold);color:#1a1408;}
+  button.primary:hover{background:#e0b658;}
+  button.primary:disabled{background:var(--surface-2);border-color:var(--border);color:var(--text-dim);}
+  button.small{padding:5px 10px;font-size:12px;}
+  button.ghost{background:transparent;border-color:transparent;color:var(--text-muted);padding:6px 8px;}
+  button.ghost:hover{color:var(--text);background:var(--surface-2);}
+  button.export-btn{background:var(--blue);border-color:var(--blue);color:#0e1420;}
+  button.export-btn:hover{background:#84a5d6;}
+
+  input[type="text"], textarea, select{
+    font-family:'Inter',sans-serif;background:var(--surface);border:1px solid var(--border);color:var(--text);
+    border-radius:var(--radius);padding:7px 10px;font-size:13px;width:100%;
+  }
+  input[type="text"]:focus, textarea:focus, select:focus, button:focus-visible{outline:2px solid var(--gold-dim);outline-offset:1px;}
+  input[type="file"]{display:none;}
+  label.file-label{cursor:pointer;}
+  .mono{font-family:'JetBrains Mono',monospace;}
+
+  .app{display:grid;grid-template-columns: 340px 1fr;gap:16px;padding:16px;max-width:1500px;margin:0 auto;align-items:start;}
+  @media (max-width: 1000px){.app{grid-template-columns: 1fr;}}
+  .panel{background:var(--surface);border:1px solid var(--border);border-radius:var(--radius);overflow:hidden;}
+  .panel-head{padding:12px 14px;border-bottom:1px solid var(--border-soft);display:flex;align-items:center;justify-content:space-between;gap:8px;}
+  .panel-head h2{margin:0;font-family:'Space Grotesk',sans-serif;font-size:13px;letter-spacing:0.08em;text-transform:uppercase;color:var(--text-muted);font-weight:600;}
+  .panel-body{padding:14px;}
+  .section-label{font-size:11px;text-transform:uppercase;letter-spacing:0.08em;color:var(--text-dim);margin:16px 0 8px 0;border-top:1px solid var(--border-soft);padding-top:12px;}
+  .section-label:first-child{border-top:none;margin-top:0;padding-top:0;}
+  .field-row{display:grid;grid-template-columns:70px 1fr;gap:8px;align-items:center;margin-bottom:8px;}
+  .field-row .k{font-size:12px;color:var(--text-muted);}
+  .upload-list{display:flex;flex-direction:column;gap:6px;}
+  .upload-list .btn{text-align:left;}
+  .status-line{font-size:11px;color:var(--text-dim);font-family:'JetBrains Mono',monospace;margin-top:2px;}
+  .empty-state{padding:28px 16px;text-align:center;color:var(--text-dim);font-size:13px;line-height:1.6;}
+  .empty-state .big{font-family:'Space Grotesk',sans-serif;color:var(--text-muted);font-size:15px;display:block;margin-bottom:6px;}
+
+  /* Message editor */
+  .msg-list{max-height:180px;overflow-y:auto;border:1px solid var(--border-soft);border-radius:var(--radius);margin-top:8px;}
+  .msg-row{display:flex;justify-content:space-between;gap:8px;padding:6px 10px;border-bottom:1px solid var(--border-soft);font-size:12px;}
+  .msg-row:last-child{border-bottom:none;}
+  .msg-row .loc-tag{font-family:'JetBrains Mono',monospace;color:var(--gold);flex-shrink:0;}
+  .msg-row .txt{flex:1;color:var(--text-muted);overflow:hidden;text-overflow:ellipsis;white-space:nowrap;}
+  .msg-row button{padding:2px 6px;font-size:11px;flex-shrink:0;}
+
+  /* Output cards */
+  .player-card{background:var(--surface);border:1px solid var(--border);border-radius:var(--radius);margin-bottom:14px;overflow:hidden;}
+  .player-card-head{display:flex;justify-content:space-between;align-items:center;padding:10px 14px;border-bottom:1px solid var(--border-soft);background:var(--surface-2);}
+  .player-card-head h3{margin:0;font-family:'Space Grotesk',sans-serif;font-size:15px;}
+  .player-card-head .meta{font-family:'JetBrains Mono',monospace;font-size:11px;color:var(--text-dim);}
+  .player-card-body{padding:12px 14px;}
+  pre.msg-preview{
+    white-space:pre-wrap;word-break:break-word;font-family:'JetBrains Mono',monospace;font-size:12px;
+    color:var(--text-muted);line-height:1.6;margin:0;max-height:260px;overflow-y:auto;
+    background:var(--bg);border:1px dashed var(--border);border-radius:var(--radius);padding:10px 12px;
+  }
+  .copy-btn.copied{border-color:var(--green);color:var(--green);}
+
+  footer{text-align:center;padding:20px;color:var(--text-dim);font-size:11px;font-family:'JetBrains Mono',monospace;}
+</style>
+</head>
+<body>
+
+<header>
+  <div class="brand">
+    <span class="mark">SMOGOFF <span class="accent">RPG2</span></span>
+    <span class="sub">Cycle Messages</span>
+  </div>
+  <div class="header-actions">
+    <a class="nav-link" href="index.html">&larr; Combat Helper</a>
+    <label class="btn file-label" for="sheet-upload">Upload character sheet CSV</label>
+    <input type="file" id="sheet-upload" accept=".csv">
+  </div>
+</header>
+
+<div class="app">
+  <!-- LEFT: data sources -->
+  <div class="panel">
+    <div class="panel-head"><h2>World Data</h2></div>
+    <div class="panel-body">
+      <div class="section-label">Reference sheets (baked in by default)</div>
+      <div class="upload-list">
+        <label class="btn file-label" for="actions-upload">Upload custom Actions CSV</label>
+        <input type="file" id="actions-upload" accept=".csv">
+        <label class="btn file-label" for="items-upload">Upload custom Items CSV</label>
+        <input type="file" id="items-upload" accept=".csv">
+        <label class="btn file-label" for="bestiary-upload">Upload custom Bestiary CSV</label>
+        <input type="file" id="bestiary-upload" accept=".csv">
+        <label class="btn file-label" for="regions-upload">Upload custom Regions CSV</label>
+        <input type="file" id="regions-upload" accept=".csv">
+        <label class="btn file-label" for="poi-upload">Upload custom POI CSV</label>
+        <input type="file" id="poi-upload" accept=".csv">
+      </div>
+
+      <div class="section-label">Location tile grids</div>
+      <label class="btn file-label" for="locations-upload">Upload "locations" folder</label>
+      <input type="file" id="locations-upload" webkitdirectory multiple>
+      <div class="status-line" id="locations-status">No location grids loaded yet.</div>
+
+      <div class="section-label">Messages</div>
+      <label class="btn file-label" for="messages-upload">Import Messages CSV (replaces all)</label>
+      <input type="file" id="messages-upload" accept=".csv">
+      <div style="display:grid;grid-template-columns:70px 1fr;gap:6px;margin-top:10px;">
+        <input type="text" id="new-msg-loc" placeholder="A1">
+        <input type="text" id="new-msg-text" placeholder="Message text…">
+      </div>
+      <button class="small" id="add-msg-btn" type="button" style="margin-top:6px;">Add message</button>
+      <div class="msg-list" id="msg-list"></div>
+
+      <div class="section-label">Persist changes</div>
+      <button class="export-btn" id="export-data-btn" type="button" style="width:100%;">Export updated data.js</button>
+      <div class="status-line">Bakes everything above (not the character sheet) into a fresh data.js — replace the file in your repo to make it the new default everywhere.</div>
+    </div>
+  </div>
+
+  <!-- RIGHT: generation + output -->
+  <div class="panel">
+    <div class="panel-head">
+      <h2>Cycle Messages</h2>
+      <button class="primary" id="generate-btn" type="button" disabled>Generate all cycle messages</button>
+    </div>
+    <div class="panel-body" id="output-body">
+      <div class="empty-state"><span class="big">No character sheet loaded</span>Upload a character sheet CSV to begin.</div>
+    </div>
+  </div>
+</div>
+
+<footer>SRP2 CYCLE MESSAGES — RUNS ENTIRELY IN YOUR BROWSER — NO DATA LEAVES YOUR DEVICE</footer>
+
+<script src="data.js"></script>
+<script src="cycle-messages.js"></script>
+</body>
+</html>
