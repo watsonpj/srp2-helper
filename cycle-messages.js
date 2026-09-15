@@ -12,6 +12,23 @@
    you re-upload every session.
    ============================================================ */
 
+// Same reasoning as app.js: if data.js didn't load, fail loudly and visibly
+// instead of silently — every button on this page depends on it.
+if (typeof DEFAULT_ACTIONS === 'undefined') {
+  document.body.innerHTML = `
+    <div style="max-width:640px;margin:60px auto;padding:24px 28px;font-family:monospace;
+                color:#e7e5df;background:#1c1f28;border:1px solid #c1554a;border-radius:8px;">
+      <h2 style="color:#c1554a;margin-top:0;">data.js didn't load</h2>
+      <p>This page needs <code>data.js</code> in the same folder as <code>cycle-messages.html</code> —
+      it's where Actions, Items, Bestiary, Regions, POI, Messages, and location grids live.
+      Without it, nothing on this page will work (uploads, buttons — none of it), which is
+      why you're seeing this instead of the tool.</p>
+      <p>Check that <code>data.js</code> was actually uploaded alongside the other files,
+      then refresh.</p>
+    </div>`;
+  throw new Error('data.js not loaded — halting cycle-messages.js.');
+}
+
 const state = {
   headers: [],
   characters: [],
@@ -301,7 +318,7 @@ function isEnemyRow(c) {
   return (c['Entity Type'] || 'Player').trim().toLowerCase() === 'enemy';
 }
 function isKO(c) {
-  return (c['Status'] || '').trim().toUpperCase() === 'KO';
+  return num(c['Current HP']) <= 0;
 }
 
 function getGrantedAction(itemName) {
