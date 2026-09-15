@@ -982,9 +982,17 @@ function buildCompactCard(idx, roleLabel) {
         <button class="compact-pin-btn" type="button" title="View full sheet">${escapeHtml(c['Name'] || '(unnamed)')}</button>
         <span class="compact-role-tag role-${roleLabel.toLowerCase()}">${roleLabel}</span>
       </div>
-      <div class="compact-hp-row">
-        <span class="csk">HP</span>
-        <span><input type="number" data-key="Current HP" value="${escapeAttr(c['Current HP'] ?? 0)}" class="compact-hp-input"> / <input type="number" data-key="Max HP" value="${escapeAttr(c['Max HP'] ?? 0)}" class="compact-hp-input"></span>
+      <div class="compact-loc">${escapeHtml(c['Current location'] || '—')}${c['Previous location'] ? ' · from ' + escapeHtml(c['Previous location']) : ''}</div>
+
+      <div class="compact-hp-cols">
+        <div class="compact-stat-box">
+          <span class="csk">Current</span>
+          <input type="number" data-key="Current HP" value="${escapeAttr(c['Current HP'] ?? 0)}">
+        </div>
+        <div class="compact-stat-box">
+          <span class="csk">Max</span>
+          <input type="number" data-key="Max HP" value="${escapeAttr(c['Max HP'] ?? 0)}">
+        </div>
       </div>
       <div class="hp-bar-track"><div class="hp-bar-fill" style="width:${hpPct}%;"></div></div>
 
@@ -1003,8 +1011,8 @@ function buildCompactCard(idx, roleLabel) {
         ${compactSelect('Equipped trinket', 'Trinket', ['Trinket'])}
       </div>
 
-      <div class="compact-inv-toggle" data-open="false">▾ Inventory</div>
-      <div class="compact-inv-list" style="display:none;">${inventoryList}</div>
+      <div class="csk" style="margin-top:2px;">Inventory</div>
+      <div class="compact-inv-list">${inventoryList}</div>
 
       ${bestiaryEntry ? `
       <div class="compact-field-row">
@@ -1076,16 +1084,6 @@ function wireCompactCard(container, idx) {
     });
   }
 
-  const invToggle = card.querySelector('.compact-inv-toggle');
-  const invList = card.querySelector('.compact-inv-list');
-  if (invToggle && invList) {
-    invToggle.addEventListener('click', () => {
-      const isOpen = invToggle.dataset.open === 'true';
-      invList.style.display = isOpen ? 'none' : 'block';
-      invToggle.textContent = isOpen ? '▾ Inventory' : '▴ Inventory';
-      invToggle.dataset.open = isOpen ? 'false' : 'true';
-    });
-  }
 
   const dropBtn = card.querySelector('.compact-roll-drop-btn');
   if (dropBtn && bestiaryEntry) {

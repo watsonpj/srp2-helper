@@ -150,6 +150,10 @@ The "No roll — narrative action." filler is gone — from the visual ledger an
 
 The combat ledger now always scrolls back to the newest entry the moment a new roll happens, even if you'd scrolled down into older history to check something. (See the correction note above — my first attempt at this got the scroll direction backwards; it's fixed now and verified properly.)
 
+### Split view refinements
+
+Following up on the first pass: HP is now two side-by-side boxes (Current / Max) instead of cramming both into one inline row — that's actually what caused the awkward stacking you saw, since two number inputs plus a "/" don't reliably fit on one line at half-width. Location (current + previous) is back under each name. Status checkboxes are now a 2-column grid instead of one long list, cutting the vertical space roughly in half. And Inventory is no longer collapsed — all 6 slots show directly, since a click-to-reveal toggle wasn't actually saving anything meaningful.
+
 ## Update: side-by-side ATK/TGT view
 
 When both an attacker and target are selected, the character panel now shows them side by side instead of just whichever was last clicked — the everyday combat case, since you almost always want both sets of stats in view before rolling.

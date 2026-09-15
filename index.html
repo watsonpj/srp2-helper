@@ -309,12 +309,9 @@
   }
   .compact-role-tag.role-attacker{background:var(--red-dim);color:#f0b6ae;}
   .compact-role-tag.role-target{background:var(--green-dim);color:#b9e6cc;}
+  .compact-loc{font-family:'JetBrains Mono',monospace;font-size:10.5px;color:var(--text-dim);margin-top:-4px;}
   .csk{font-size:9.5px;text-transform:uppercase;letter-spacing:0.05em;color:var(--text-dim);}
-  .compact-hp-row{display:flex;justify-content:space-between;align-items:baseline;font-size:12px;}
-  .compact-hp-input{
-    width:2.6em;background:transparent;border:none;color:var(--text);font-family:'JetBrains Mono',monospace;
-    font-size:13px;font-weight:700;text-align:center;padding:0;
-  }
+  .compact-hp-cols{display:grid;grid-template-columns:1fr 1fr;gap:5px;}
   .compact-stat-row{display:grid;grid-template-columns:1fr 1fr 1fr;gap:5px;}
   .compact-stat-box{background:var(--surface-3);border-radius:4px;padding:5px 6px;text-align:center;}
   .compact-stat-box input{
@@ -322,7 +319,7 @@
     font-size:13px;font-weight:700;text-align:center;padding:0;
   }
   .cs-eff{display:block;font-size:8.5px;color:var(--gold);font-family:'JetBrains Mono',monospace;}
-  .compact-status-list{display:flex;flex-direction:column;gap:3px;}
+  .compact-status-list{display:grid;grid-template-columns:1fr 1fr;gap:3px 6px;}
   .compact-status-row{
     display:flex;align-items:center;gap:6px;font-size:11.5px;color:var(--text-muted);
     padding:3px 6px;border-radius:4px;cursor:pointer;
@@ -334,9 +331,7 @@
   .compact-equip-list{display:flex;flex-direction:column;gap:6px;}
   .compact-field-row{display:flex;flex-direction:column;gap:2px;}
   .compact-field-row select, .compact-field-row input{font-size:11.5px;padding:5px 7px;}
-  .compact-inv-toggle{font-size:11px;color:var(--blue);cursor:pointer;user-select:none;}
-  .compact-inv-toggle:hover{text-decoration:underline;}
-  .compact-inv-list{display:flex;flex-direction:column;gap:6px;margin-top:4px;}
+  .compact-inv-list{display:flex;flex-direction:column;gap:6px;margin-top:2px;}
   .cs-drops{font-size:10.5px;color:var(--text-muted);}
   .section-label{
     font-size:11px;text-transform:uppercase;letter-spacing:0.08em;color:var(--text-dim);
@@ -589,7 +584,7 @@
 
 <footer>SRP2 SESSION LEDGER — RUNS ENTIRELY IN YOUR BROWSER — NO DATA LEAVES YOUR DEVICE</footer>
 
-<script src="data.js?v=6"></script>
-<script src="app.js?v=6"></script>
+<script src="data.js?v=7"></script>
+<script src="app.js?v=7"></script>
 </body>
 </html>
