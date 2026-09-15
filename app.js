@@ -1196,7 +1196,7 @@ function renderActionDetail() {
   const target = state.characters[state.targetIdx];
 
   const needsAttacker = a.type !== 'Miscellaneous';
-  const needsTarget = a.type !== 'Miscellaneous' || a.name.trim().toLowerCase() === 'inspect';
+  const needsTarget = a.type !== 'Miscellaneous' || ['inspect', 'pickpocket'].includes(a.name.trim().toLowerCase());
 
   wrap.innerHTML = `
     <h4>${escapeHtml(a.name)}</h4>
@@ -1360,6 +1360,40 @@ function performAction(a, opts = {}) {
         infoLines = buildInspectLines(target);
       } else {
         resultLine = 'No target selected to inspect.';
+      }
+    } else if (nameLower === 'pickpocket') {
+      // "Replace a random item from the target's inventory with a Stone Weight" — read
+      // literally as swapping their item out for a decoy (Pebble Weight, the closest
+      // match on the sheet; nothing named "Stone Weight" exists). Whether the attacker
+      // actually keeps the stolen item isn't stated by that description, only the
+      // replacement is — this assumes yes, since that's what "pickpocket" implies, but
+      // it's worth confirming rather than taking as given.
+      if (!target) {
+        resultLine = 'No target selected to pickpocket.';
+      } else {
+        const occupied = INVENTORY_SLOT_KEYS.filter(k => {
+          const v = (target[k] || '').trim();
+          return v && v.toLowerCase() !== 'none';
+        });
+        if (!occupied.length) {
+          resultLine = `${target['Name']} has nothing to steal.`;
+        } else {
+          const slot = occupied[Math.floor(Math.random() * occupied.length)];
+          const stolenName = target[slot];
+          target[slot] = 'Pebble Weight';
+          resultLine = `Stole ${stolenName} from ${target['Name']}.`;
+          if (attacker) {
+            const emptySlot = INVENTORY_SLOT_KEYS.find(k => {
+              const v = (attacker[k] || '').trim();
+              return !v || v.toLowerCase() === 'none';
+            });
+            if (emptySlot) {
+              attacker[emptySlot] = stolenName;
+            } else {
+              bookmarkNote = `${attacker['Name']}'s inventory is full — the ${stolenName} couldn't be carried.`;
+            }
+          }
+        }
       }
     } else if (nameLower === 'mark location' && attacker) {
       attacker['Bookmark'] = attacker['Current location'] || '';
