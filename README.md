@@ -150,6 +150,20 @@ The "No roll — narrative action." filler is gone — from the visual ledger an
 
 The combat ledger now always scrolls back to the newest entry the moment a new roll happens, even if you'd scrolled down into older history to check something. (See the correction note above — my first attempt at this got the scroll direction backwards; it's fixed now and verified properly.)
 
+## Update: side-by-side ATK/TGT view
+
+When both an attacker and target are selected, the character panel now shows them side by side instead of just whichever was last clicked — the everyday combat case, since you almost always want both sets of stats in view before rolling.
+
+Rather than literally halving the existing full-detail layout (which would've squeezed several already-nested two-column grids — stats, equipment, inventory — into an unworkable width), each side gets a distinct compact card: HP bar, the three stat numbers, the full interactive status checkbox list (not simplified to a passive tag list — genuinely toggleable, single-column so it fits), equipped weapon/armour/trinket as stacked dropdowns, and Inventory collapsed behind a "▾ Inventory" toggle since it's rarely what you need mid-decision. Everything in it is live-editable, same as the full view.
+
+**How it decides what to show**, all handled automatically:
+- Both ATK and TGT set → split view.
+- Only one set, or neither → the existing full single-character view (or the empty state).
+- Click a name → "pins" that one character full-width (useful for editing their full inventory, or checking on a bystander who isn't currently ATK/TGT) — a "⇄ Compare ATK vs TGT" button appears to jump back.
+- Re-toggling either ATK or TGT tag automatically un-pins and snaps back to the split view, so you're never stuck looking at someone who's no longer relevant.
+
+Tested all of this directly — the four render states, live editing of HP/stats/status/equipment on both cards independently, the inventory toggle, pinning, and the back-to-split button, plus re-targeting mid-pin correctly restoring the comparison view with the new pair. One real bug surfaced and got fixed along the way: editing a field in the split view could throw a harmless-but-noisy console error from a DOM-replacement race with the browser's own input cleanup — fixed by deferring the re-render one tick, standard practice for this exact situation.
+
 ## Update: Pebble Weights excluded from theft
 
 Following up on the exploit you spotted — Pickpocket now skips any slot already holding a Pebble Weight when picking what to steal, so it can no longer recycle its own decoys into an infinite supply. If a target's inventory is either genuinely empty or entirely decoys, it now says "has nothing worth stealing" instead of quietly generating more junk. Tested all three shapes directly: an inventory of only Pebble Weights, a mixed one (confirmed the existing Pebble Weight slot is never touched across five repeated attempts — only the real item ever gets taken), and a fully empty one.

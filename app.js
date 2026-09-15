@@ -653,6 +653,7 @@ document.getElementById('sheet-upload').addEventListener('change', (e) => {
       state.characters.forEach(c => syncForcedStatus(c)); // e.g. anyone already listed wearing Cursed/Sealed/Molten Armour
       state.attackerIdx = null;
       state.targetIdx = null;
+      state.detailIdx = null;
       document.getElementById('export-btn').disabled = false;
       renderRoster();
       renderDetail();
@@ -850,12 +851,14 @@ function renderRoster() {
       ev.stopPropagation();
       state.attackerIdx = (state.attackerIdx === idx) ? null : idx;
       state.selectedActionId = null;
-      renderRoster(); renderActionList(); renderActionDetail();
+      state.detailIdx = null; // un-pin so the detail pane snaps back to reflect the new ATK/TGT automatically
+      renderRoster(); renderDetail(); renderActionList(); renderActionDetail();
     });
     row.querySelector('[data-role="tgt"]').addEventListener('click', (ev) => {
       ev.stopPropagation();
       state.targetIdx = (state.targetIdx === idx) ? null : idx;
-      renderRoster(); renderActionDetail();
+      state.detailIdx = null;
+      renderRoster(); renderDetail(); renderActionDetail();
     });
     const removeBtn = row.querySelector('.remove-mob-btn');
     if (removeBtn) {
@@ -878,9 +881,232 @@ function renderRoster() {
 }
 
 // ---------- Character detail rendering ----------
+// Dispatcher: decides whether to show one pinned character full-width, both
+// ATK and TGT side by side, or the empty state — called everywhere the old
+// single renderDetail() used to be, so no call site elsewhere needs to change.
 function renderDetail() {
+  const pinned = state.detailIdx;
+  if (pinned !== null && pinned !== undefined && state.characters[pinned]) {
+    renderSingleDetail(pinned);
+    return;
+  }
+  const atk = state.attackerIdx, tgt = state.targetIdx;
+  const hasAtk = atk !== null && atk !== undefined && state.characters[atk];
+  const hasTgt = tgt !== null && tgt !== undefined && state.characters[tgt];
+  if (hasAtk && hasTgt && atk !== tgt) {
+    renderSplitDetail(atk, tgt);
+  } else if (hasAtk) {
+    renderSingleDetail(atk);
+  } else if (hasTgt) {
+    renderSingleDetail(tgt);
+  } else {
+    document.getElementById('detail-body').innerHTML = '<div class="empty-state"><span class="big">Nothing selected</span>Choose a character from the roster, or set an ATK/TGT, to view their sheet.</div>';
+  }
+}
+
+// Compact side-by-side view for when both ATK and TGT are set — the everyday
+// combat case, showing exactly what's needed to decide a roll (HP, stats,
+// statuses, equipped gear) without the full single-character layout's width.
+// Everything's still live-editable; Inventory is collapsed by default since
+// it's rarely relevant mid-decision, and clicking either name "pins" that
+// character to the full single-width sheet (via renderSingleDetail) for
+// anything the compact view doesn't show.
+function renderSplitDetail(atkIdx, tgtIdx) {
   const body = document.getElementById('detail-body');
-  const idx = state.detailIdx;
+  body.innerHTML = `<div class="split-grid">
+    ${buildCompactCard(atkIdx, 'Attacker')}
+    ${buildCompactCard(tgtIdx, 'Target')}
+  </div>`;
+  wireCompactCard(body, atkIdx);
+  wireCompactCard(body, tgtIdx);
+}
+
+function buildCompactCard(idx, roleLabel) {
+  const c = state.characters[idx];
+  if (!c) return '';
+  const maxHp = effectiveMaxHP(c);
+  const hpPct = clamp((num(c['Current HP']) / Math.max(1, maxHp)) * 100, 0, 100);
+  const gearBonus = getEquipmentStatBonus(c);
+  const statusBonus = getStatusStatBonus(c);
+  const bestiaryEntry = c.__mob ? state.bestiary.find(b => b.id === c.__bestiaryId) : null;
+
+  const compactStat = (key, label, gearKey) => {
+    const base = num(c[key], 0);
+    const total = base + gearBonus[gearKey] + statusBonus[gearKey];
+    return `
+      <div class="compact-stat-box">
+        <span class="csk">${label}</span>
+        <input type="number" data-key="${key}" value="${escapeAttr(base)}">
+        ${total !== base ? `<span class="cs-eff">→ ${total}</span>` : ''}
+      </div>`;
+  };
+
+  // Same "preserve anything unrecognized" logic as the full view's itemSelect,
+  // just in a single-column row instead of a 2-up grid — narrower is fine
+  // since dropdowns don't need horizontal room to stay usable.
+  const compactSelect = (key, label, types) => {
+    const current = (c[key] ?? '').trim();
+    const pool = types ? state.items.filter(it => types.includes(it.type)) : state.items;
+    const sorted = [...pool].sort((x, y) => x.name.localeCompare(y.name));
+    const isKnown = !current || current.toLowerCase() === 'none' || sorted.some(it => it.name.trim().toLowerCase() === current.toLowerCase());
+    let options = `<option value="None" ${!current || current.toLowerCase() === 'none' ? 'selected' : ''}>None</option>`;
+    if (!isKnown) options += `<option value="${escapeAttr(current)}" selected>${escapeHtml(current)} (unrecognized)</option>`;
+    sorted.forEach(it => {
+      const sel = it.name.trim().toLowerCase() === current.toLowerCase() ? 'selected' : '';
+      options += `<option value="${escapeAttr(it.name)}" ${sel}>${escapeHtml(it.name)}</option>`;
+    });
+    return `
+      <div class="compact-field-row">
+        <span class="csk">${label}</span>
+        <select data-key="${key}">${options}</select>
+      </div>`;
+  };
+
+  const forced = (getForcedStatus(c) || '').toLowerCase();
+  const statusList = getTrackedStatusNames().map(name => {
+    const checked = hasStatus(c, name);
+    const isForced = forced === name.toLowerCase();
+    const statusDef = state.statuses.find(s => s.name.trim().toLowerCase() === name.toLowerCase());
+    return `
+      <label class="compact-status-row${checked ? ' active' : ''}" title="${escapeAttr(statusDef ? statusDef.description : '')}">
+        <input type="checkbox" data-status="${escapeAttr(name)}" ${checked ? 'checked' : ''} ${isForced ? 'disabled' : ''}>
+        <span>${escapeHtml(name)}</span>${isForced ? '<span class="forced-tag">forced</span>' : ''}
+      </label>`;
+  }).join('');
+
+  const inventoryList = INVENTORY_SLOT_KEYS.map((key, i) => compactSelect(key, `Slot ${i + 1}`, null)).join('');
+
+  return `
+    <div class="compact-card" data-idx="${idx}">
+      <div class="compact-card-head">
+        <button class="compact-pin-btn" type="button" title="View full sheet">${escapeHtml(c['Name'] || '(unnamed)')}</button>
+        <span class="compact-role-tag role-${roleLabel.toLowerCase()}">${roleLabel}</span>
+      </div>
+      <div class="compact-hp-row">
+        <span class="csk">HP</span>
+        <span><input type="number" data-key="Current HP" value="${escapeAttr(c['Current HP'] ?? 0)}" class="compact-hp-input"> / <input type="number" data-key="Max HP" value="${escapeAttr(c['Max HP'] ?? 0)}" class="compact-hp-input"></span>
+      </div>
+      <div class="hp-bar-track"><div class="hp-bar-fill" style="width:${hpPct}%;"></div></div>
+
+      <div class="compact-stat-row">
+        ${compactStat('Attack Bonus', 'ATK', 'attack')}
+        ${compactStat('Defence Bonus', 'DEF', 'defence')}
+        ${compactStat('Speed Bonus', 'SPD', 'speed')}
+      </div>
+
+      <div class="compact-status-list">${statusList}</div>
+      ${hasStatus(c, 'Poison') ? '<button class="btn small compact-poison-btn" type="button">Poison tick (−1 HP)</button>' : ''}
+
+      <div class="compact-equip-list">
+        ${compactSelect('Equipped weapon', 'Weapon', ['Weapon'])}
+        ${compactSelect('Equipped armour', 'Armour', ['Armour'])}
+        ${compactSelect('Equipped trinket', 'Trinket', ['Trinket'])}
+      </div>
+
+      <div class="compact-inv-toggle" data-open="false">▾ Inventory</div>
+      <div class="compact-inv-list" style="display:none;">${inventoryList}</div>
+
+      ${bestiaryEntry ? `
+      <div class="compact-field-row">
+        <span class="csk">Drops</span>
+        <span class="cs-drops">${escapeHtml(bestiaryEntry.drop1 || '—')} (70%) · ${escapeHtml(bestiaryEntry.drop2 || '—')} (30%)</span>
+      </div>
+      <button class="btn small compact-roll-drop-btn" type="button">Roll drop</button>
+      <span class="randomizer-result compact-drop-result"></span>` : ''}
+    </div>`;
+}
+
+function wireCompactCard(container, idx) {
+  const card = container.querySelector(`.compact-card[data-idx="${idx}"]`);
+  if (!card) return;
+  const c = state.characters[idx];
+  const bestiaryEntry = c.__mob ? state.bestiary.find(b => b.id === c.__bestiaryId) : null;
+
+  card.querySelectorAll('input[data-key], select[data-key]').forEach(el => {
+    el.addEventListener('change', () => {
+      const key = el.dataset.key;
+      const prevValue = c[key];
+      c[key] = el.value;
+      if (key === 'Equipped armour') syncForcedStatus(c, prevValue);
+      // Deferred one tick: the split view's two cards sit right next to each
+      // other, and replacing this input's own ancestor synchronously (inside
+      // its own change event) can race the browser's native blur/cleanup for
+      // that same input. A microtask delay lets that finish first — same
+      // state change, just avoids a harmless-but-noisy console warning.
+      setTimeout(() => {
+        renderDetail();
+        renderRoster();
+        renderActionList();
+        renderActionDetail();
+      }, 0);
+    });
+  });
+
+  card.querySelectorAll('input[type="checkbox"][data-status]').forEach(cb => {
+    cb.addEventListener('change', () => {
+      setStatus(c, cb.dataset.status, cb.checked);
+      setTimeout(() => {
+        renderDetail();
+        renderRoster();
+        renderActionList();
+        renderActionDetail();
+      }, 0);
+    });
+  });
+
+  const poisonBtn = card.querySelector('.compact-poison-btn');
+  if (poisonBtn) {
+    poisonBtn.addEventListener('click', () => {
+      state.turn += 1;
+      const prevHP = num(c['Current HP']);
+      const newHP = Math.max(0, prevHP - 1);
+      c['Current HP'] = String(newHP);
+      const note = checkDefeatOrRevive(c, prevHP);
+      addLogEntry({ cls: 'dmg', atk: c['Name'], action: 'Poison tick', tgt: null, rollLine: '', resultLine: '−1 HP', note });
+      renderDetail();
+      renderRoster();
+    });
+  }
+
+  const pinBtn = card.querySelector('.compact-pin-btn');
+  if (pinBtn) {
+    pinBtn.addEventListener('click', () => {
+      state.detailIdx = idx;
+      renderDetail();
+    });
+  }
+
+  const invToggle = card.querySelector('.compact-inv-toggle');
+  const invList = card.querySelector('.compact-inv-list');
+  if (invToggle && invList) {
+    invToggle.addEventListener('click', () => {
+      const isOpen = invToggle.dataset.open === 'true';
+      invList.style.display = isOpen ? 'none' : 'block';
+      invToggle.textContent = isOpen ? '▾ Inventory' : '▴ Inventory';
+      invToggle.dataset.open = isOpen ? 'false' : 'true';
+    });
+  }
+
+  const dropBtn = card.querySelector('.compact-roll-drop-btn');
+  if (dropBtn && bestiaryEntry) {
+    dropBtn.addEventListener('click', () => {
+      const has1 = !!(bestiaryEntry.drop1 && bestiaryEntry.drop1.trim() && bestiaryEntry.drop1.trim() !== '-');
+      const has2 = !!(bestiaryEntry.drop2 && bestiaryEntry.drop2.trim() && bestiaryEntry.drop2.trim() !== '-');
+      const resultEl = card.querySelector('.compact-drop-result');
+      let pick;
+      if (has1 && has2) pick = Math.random() < 0.7 ? bestiaryEntry.drop1 : bestiaryEntry.drop2;
+      else if (has1) pick = bestiaryEntry.drop1;
+      else if (has2) pick = bestiaryEntry.drop2;
+      else pick = null;
+      resultEl.textContent = pick ? `→ ${pick}` : 'No drops on file.';
+    });
+  }
+}
+
+// Shows one character's full editable sheet, full width. Used when a specific
+// character is "pinned" (clicked by name) or when only one of ATK/TGT is set.
+function renderSingleDetail(idx) {
+  const body = document.getElementById('detail-body');
   if (idx === undefined || idx === null || !state.characters[idx]) {
     body.innerHTML = '<div class="empty-state"><span class="big">Nothing selected</span>Choose a character from the roster to view and edit their sheet.</div>';
     return;
@@ -965,6 +1191,7 @@ function renderDetail() {
         <h3 contenteditable="false">${escapeHtml(c['Name'] || '(unnamed)')}</h3>
         <div class="loc">${escapeHtml(c['Current location'] || '—')} ${c['Previous location'] ? '· from ' + escapeHtml(c['Previous location']) : ''}</div>
       </div>
+      ${state.attackerIdx !== null && state.targetIdx !== null && state.attackerIdx !== state.targetIdx ? '<button class="btn small" id="back-to-split-btn" type="button">⇄ Compare ATK vs TGT</button>' : ''}
     </div>
 
     <div class="hp-block">
@@ -1093,6 +1320,14 @@ function renderDetail() {
       else if (has2) pick = bestiaryEntry.drop2;
       else pick = null;
       resultEl.textContent = pick ? `→ ${pick}` : 'No drops on file.';
+    });
+  }
+
+  const backToSplitBtn = document.getElementById('back-to-split-btn');
+  if (backToSplitBtn) {
+    backToSplitBtn.addEventListener('click', () => {
+      state.detailIdx = null; // un-pin — dispatcher will show the ATK/TGT split view again
+      renderDetail();
     });
   }
 }
