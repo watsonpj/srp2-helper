@@ -150,6 +150,22 @@ The "No roll — narrative action." filler is gone — from the visual ledger an
 
 The combat ledger now always scrolls back to the newest entry the moment a new roll happens, even if you'd scrolled down into older history to check something. (See the correction note above — my first attempt at this got the scroll direction backwards; it's fixed now and verified properly.)
 
+## Update: Pebble Weights excluded from theft
+
+Following up on the exploit you spotted — Pickpocket now skips any slot already holding a Pebble Weight when picking what to steal, so it can no longer recycle its own decoys into an infinite supply. If a target's inventory is either genuinely empty or entirely decoys, it now says "has nothing worth stealing" instead of quietly generating more junk. Tested all three shapes directly: an inventory of only Pebble Weights, a mixed one (confirmed the existing Pebble Weight slot is never touched across five repeated attempts — only the real item ever gets taken), and a fully empty one.
+
+## Fix: cache-busting on script tags
+
+Root cause of the Pickpocket mystery, finally nailed down: your live `app.js` file on GitHub had the correct code the whole time (confirmed by viewing it directly), but your browser was executing a **stale cached copy** independent of that — confirmed by `performAction.toString().includes('pickpocket')` returning `false` even though the file itself, fetched directly, contained it four times over. A hard refresh doesn't reliably beat this for JS files specifically, since some caches (browser or CDN-level, in front of GitHub Pages) key on the bare URL and don't aggressively recheck freshness.
+
+Fixed by adding a version query string to every local script tag — `app.js?v=3`, `data.js?v=3`, `cycle-messages.js?v=3` — on both pages. A query string makes the full URL different from the browser/CDN's point of view, so there's no stale entry to accidentally match; it's forced to fetch fresh. I'll bump that `v=` number on both HTML files whenever a future update needs to guarantee a clean load, and you can do the same if this ever recurs — it's a much more reliable fix than asking for a hard refresh each time.
+
+## Update: Pickpocket implemented
+
+Pickpocket now actually does something: picks a random occupied slot from the target's inventory, replaces it with a Pebble Weight (the closest match on the sheet — nothing's literally named "Stone Weight," but "Has no use" fits the decoy-junk concept exactly), and gives the stolen item to the attacker if they have a free slot. Tested all the edges: a clean steal, a target with nothing to take ("has nothing to steal," no swap happens), and an attacker with a full inventory (the target still loses the item either way — the theft itself always succeeds, it's just carrying it that can fail). Gated the same way as Inspect — needs an actual target, so the Roll button is disabled without one instead of quietly doing nothing.
+
+One assumption worth flagging: the item's description only says the target's item gets *replaced*, not that the attacker keeps it — giving the attacker the stolen item is my read of what "pickpocket" implies, not something stated outright. Easy to change if that's not the intent.
+
 ## Update: Cursed Magick fully resynced, gap-filling actions added
 
 Your updated Actions.csv closed out both flagged gaps cleanly:
