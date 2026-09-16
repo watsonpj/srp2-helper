@@ -359,7 +359,7 @@ function buildCycleMessage(player) {
       const entry = state.bestiary.find(b => b.name.trim().toLowerCase() === baseName.toLowerCase());
       if (instances.length === 1) {
         const desc = entry ? entry.description : '';
-        msg += `There is a [B]${instances[0]['Name']}[/B] here. ${desc}\n`;
+        msg += `There is a [B]${baseName}[/B] here. ${desc}\n`;
       } else {
         // Graceful fallback if a bestiary entry hasn't been given plural text yet:
         // falls back to the base/singular name and description rather than blanking out.
@@ -384,7 +384,13 @@ function buildCycleMessage(player) {
   const corpsesHere = state.characters.filter(c => c !== player && c['Current location'] === loc && isKO(c));
   if (corpsesHere.length) {
     msg += 'You see some bodies here:\n';
-    corpsesHere.forEach(c => { msg += `  - ${c['Name']}\n`; });
+    corpsesHere.forEach(c => {
+      // Same Base Name preference as the "enemies present" listing above — a
+      // defeated enemy's corpse shouldn't show its internal disambiguation
+      // suffix either. Players don't have a Base Name, so they're unaffected.
+      const label = isEnemyRow(c) ? (c['Base Name'] || c['Name']) : c['Name'];
+      msg += `  - ${label}\n`;
+    });
     msg += '\n';
   }
 
