@@ -154,6 +154,10 @@ The combat ledger now always scrolls back to the newest entry the moment a new r
 
 Following up on the first pass: HP is now two side-by-side boxes (Current / Max) instead of cramming both into one inline row — that's actually what caused the awkward stacking you saw, since two number inputs plus a "/" don't reliably fit on one line at half-width. Location (current + previous) is back under each name. Status checkboxes are now a 2-column grid instead of one long list, cutting the vertical space roughly in half. And Inventory is no longer collapsed — all 6 slots show directly, since a click-to-reveal toggle wasn't actually saving anything meaningful.
 
+## Update: grouped enemy listings in Cycle Messages
+
+Multiple instances of the same creature at a location now collapse into one line using the Bestiary's new `NamePlural`/`DescriptionPlural` columns, instead of repeating an identical line per instance. Grouping is by Base Name, not display name, so "Thief" and "Thief (5)" correctly count as 2 Thieves rather than showing up as two separate unrelated lines. A single instance still reads exactly as before ("There is a Wolf here..."); two or more reads as "There are 2 Thieves here. They brandish steel at you." — tested against your actual data (Wolf ×1, Thief ×2, Bandit ×1, Assassin ×1 at one location, Wolf ×1 and Scorpit ×1 at another) and confirmed the grouping is correctly scoped per-location, not bleeding across locations that happen to share a creature type. Falls back gracefully to the singular name/description if a bestiary entry hasn't been given plural text yet, rather than showing blank.
+
 ## Update: side-by-side ATK/TGT view
 
 When both an attacker and target are selected, the character panel now shows them side by side instead of just whichever was last clicked — the everyday combat case, since you almost always want both sets of stats in view before rolling.

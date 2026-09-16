@@ -171,6 +171,7 @@ makeSimpleUploadHandler('bestiary-upload', o => ({
   region1: o['Region 1'] || '', region2: o['Region 2'] || '', hp: o.HP || '',
   attackBonus: o['Attack Bonus'] || '', defenceBonus: o['Defence Bonus'] || '', speedBonus: o['Speed Bonus'] || '',
   ability1: o['Ability 1'] || '', ability2: o['Ability 2'] || '', drop1: o['Drop 1'] || '', drop2: o['Drop 2'] || '', value: o.Value || '',
+  namePlural: o['NamePlural'] || '', descriptionPlural: o['DescriptionPlural'] || '',
 }), (rows) => { state.bestiary = rows; });
 
 makeSimpleUploadHandler('regions-upload', o => ({
@@ -343,14 +344,29 @@ function buildCycleMessage(player) {
   const poi = getPOIForLocation(loc);
   if (poi && poi.description) msg += `${poi.description}\n\n`;
 
-  // Enemies present
+  // Enemies present — grouped by Base Name, so multiple instances of the same
+  // creature (two Thieves, say) get one combined line using the Bestiary's
+  // plural columns, instead of repeating an identical line per instance.
   const enemiesHere = state.characters.filter(c => !isKO(c) && isEnemyRow(c) && c['Current location'] === loc);
   if (enemiesHere.length) {
+    const groups = {};
     enemiesHere.forEach(e => {
       const baseName = (e['Base Name'] || e['Name'] || '').trim();
+      (groups[baseName] = groups[baseName] || []).push(e);
+    });
+    Object.keys(groups).forEach(baseName => {
+      const instances = groups[baseName];
       const entry = state.bestiary.find(b => b.name.trim().toLowerCase() === baseName.toLowerCase());
-      const desc = entry ? entry.description : '';
-      msg += `There is a [B]${e['Name']}[/B] here. ${desc}\n`;
+      if (instances.length === 1) {
+        const desc = entry ? entry.description : '';
+        msg += `There is a [B]${instances[0]['Name']}[/B] here. ${desc}\n`;
+      } else {
+        // Graceful fallback if a bestiary entry hasn't been given plural text yet:
+        // falls back to the base/singular name and description rather than blanking out.
+        const namePlural = entry && entry.namePlural ? entry.namePlural : baseName;
+        const descPlural = entry && entry.descriptionPlural ? entry.descriptionPlural : (entry ? entry.description : '');
+        msg += `There are [B]${instances.length} ${namePlural}[/B] here. ${descPlural}\n`;
+      }
     });
     msg += '\n';
   }

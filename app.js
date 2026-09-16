@@ -759,6 +759,8 @@ document.getElementById('bestiary-upload').addEventListener('change', (e) => {
         drop1: o['Drop 1'] || '',
         drop2: o['Drop 2'] || '',
         value: o.Value || '',
+        namePlural: o['NamePlural'] || '',
+        descriptionPlural: o['DescriptionPlural'] || '',
       }));
       state.characters.forEach(reconstructMobMetadata); // refresh ability lists for already-loaded enemies against the new bestiary
       renderBestiaryList();
