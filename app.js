@@ -4,8 +4,31 @@
    client-side. Re-upload your CSV each session; export when done.
    ============================================================ */
 
+// If data.js failed to load (wrong path, missing from the deployment, etc.)
+// every DEFAULT_* const below is undefined, and without this check the whole
+// script would silently die on the next line — no event listeners would ever
+// attach, so every button on the page would look broken with zero indication
+// why. Fail loudly instead.
+if (typeof DEFAULT_ACTIONS === 'undefined') {
+  document.body.innerHTML = `
+    <div style="max-width:640px;margin:60px auto;padding:24px 28px;font-family:monospace;
+                color:#e7e5df;background:#1c1f28;border:1px solid #c1554a;border-radius:8px;">
+      <h2 style="color:#c1554a;margin-top:0;">data.js didn't load</h2>
+      <p>This page needs <code>data.js</code> in the same folder as <code>index.html</code> —
+      it's where Actions, Items, Bestiary, and Statuses live. Without it, nothing on this
+      page will work (uploads, buttons — none of it), which is why you're seeing this
+      instead of the tool.</p>
+      <p>Check that <code>data.js</code> was actually uploaded alongside the other files,
+      then refresh.</p>
+    </div>`;
+  throw new Error('data.js not loaded — halting app.js.');
+}
+
 // ---------- State ----------
-const DEFAULT_HEADERS = ['Name','Current location','Previous location','Status','Current HP','Max HP',
+// Base headers for a brand-new sheet (before any upload). The Status columns
+// are appended dynamically by ensureStatusColumns() instead of being listed
+// here directly, so this stays in sync with whatever Statuses.csv defines.
+const DEFAULT_HEADERS = ['Name','Current location','Previous location','Current HP','Max HP',
   'Attack Bonus','Defence Bonus','Speed Bonus','Equipped weapon','Equipped armour','Equipped trinket',
   'Inventory slot 1','Inventory slot 2','Inventory slot 3','Inventory slot 4','Inventory slot 5','Inventory slot 6',
   'Likes','Bookmark','Cycle','Entity Type','Base Name'];
@@ -198,12 +221,12 @@ function getEquipmentStatBonus(character) {
 const STAT_FIELD_TO_KEY = { 'Attack Bonus': 'attack', 'Defence Bonus': 'defence', 'Speed Bonus': 'speed' };
 
 // Status-driven stat modifiers (as opposed to gear-driven ones, above). Only
-// Blind's -1 Attack Bonus is implemented here — Frozen's Speed penalty is
-// deliberately skipped since Speed only affects turn order, which is handled
-// outside this tool.
+// Blind's Attack Bonus penalty is implemented here (now -2, per the updated
+// Statuses sheet) — Frozen's Speed penalty is deliberately skipped since
+// Speed only affects turn order, which is handled outside this tool.
 function getStatusStatBonus(character) {
   const out = { attack: 0, defence: 0, speed: 0 };
-  if (hasStatus(character, 'Blind')) out.attack -= 1;
+  if (hasStatus(character, 'Blind')) out.attack -= 2;
   return out;
 }
 
@@ -229,8 +252,9 @@ function buildInspectLines(target) {
   const atk = effectiveStat(target, 'Attack Bonus');
   const def = effectiveStat(target, 'Defence Bonus');
   const spd = effectiveStat(target, 'Speed Bonus');
+  const active = getActiveStatuses(target);
   return [
-    `Status: ${target['Status'] || 'OK'}`,
+    `Status: ${active.length ? active.join(', ') : 'OK'}`,
     `HP: ${target['Current HP'] ?? '?'} / ${effectiveMaxHP(target)}`,
     `Attack ${atk} · Defence ${def} · Speed ${spd}`,
     `Weapon: ${target['Equipped weapon'] || 'None'} · Armour: ${target['Equipped armour'] || 'None'} · Trinket: ${target['Equipped trinket'] || 'None'}`,
@@ -262,6 +286,56 @@ function isImmuneTo(character, statusName) {
   return eff.immuneAll || eff.immunities.has(statusName);
 }
 
+// ---------- Multi-status support ----------
+// Every status name Statuses.csv defines, excluding OK (which isn't a real
+// flag — it's just "nothing else is true"). Driven by state.statuses so any
+// future status added to that sheet gets a column + checkbox automatically,
+// no code change needed here.
+function getTrackedStatusNames() {
+  return state.statuses.filter(s => (s.name || '').trim().toLowerCase() !== 'ok').map(s => s.name.trim());
+}
+
+function statusColumnKey(statusName) {
+  return 'Status ' + statusName;
+}
+
+function hasStatus(character, statusName) {
+  if (!character) return false;
+  return (character[statusColumnKey(statusName)] || '').trim().toUpperCase() === 'TRUE';
+}
+
+function setStatus(character, statusName, value) {
+  if (!character) return;
+  character[statusColumnKey(statusName)] = value ? 'TRUE' : 'FALSE';
+}
+
+function getActiveStatuses(character) {
+  if (!character) return [];
+  return getTrackedStatusNames().filter(name => hasStatus(character, name));
+}
+
+// Makes sure every tracked status has a column on whatever sheet is loaded,
+// appending + backfilling FALSE for anyone missing it — same pattern as
+// ensureEntityColumns. This means an uploaded sheet that's missing a column
+// entirely (say, an early version without "Status Poison") doesn't silently
+// lose that status forever — it just starts everyone at FALSE for it, and
+// the column is included from the next export onward.
+function ensureStatusColumns() {
+  let added = false;
+  getTrackedStatusNames().forEach(name => {
+    const col = statusColumnKey(name);
+    if (!state.headers.includes(col)) { state.headers.push(col); added = true; }
+  });
+  if (added) {
+    state.characters.forEach(c => {
+      getTrackedStatusNames().forEach(name => {
+        const col = statusColumnKey(name);
+        if (c[col] === undefined || c[col] === '') c[col] = 'FALSE';
+      });
+    });
+  }
+}
+
 // Statuses that armour has permanently forced onto the wearer resist being
 // cleared by Cure specifically (per SRP2 rules) — everything else can still
 // be overwritten normally by a fresh status roll.
@@ -271,35 +345,52 @@ function getForcedStatus(character) {
   return getEquippedEffects(character).forcedStatus || null;
 }
 
-// Applies (or re-applies) any status an equipped item forces on its wearer.
-// Called after CSV upload and whenever equipment changes.
-function syncForcedStatus(character) {
+// Applies (or re-applies) any status an equipped item forces on its wearer —
+// additive: this only ever turns a specific flag ON, never touches any other
+// status the character has, since multiple statuses can now coexist. Also
+// clears whichever status the PREVIOUS armour was forcing, if the new armour
+// isn't forcing that same one, so swapping out Cursed Armour doesn't leave
+// someone permanently Zombie after they take it off.
+function syncForcedStatus(character, previousArmourName) {
   if (!character) return;
+  if (previousArmourName !== undefined) {
+    const prevItem = findItem(previousArmourName);
+    const prevForced = prevItem ? parseItemEffects(prevItem.effect).forcedStatus : null;
+    const newForced = getForcedStatus(character);
+    if (prevForced && (!newForced || prevForced.toLowerCase() !== newForced.toLowerCase())) {
+      setStatus(character, prevForced, false);
+    }
+  }
   const forced = getForcedStatus(character);
-  if (forced) character['Status'] = forced;
+  if (forced) setStatus(character, forced, true);
 }
 
-function hasStatus(character, statusName) {
-  if (!character) return false;
-  return (character['Status'] || '').trim().toLowerCase() === statusName.toLowerCase();
+// Most status-clearing actions come from an item that says "Cures all
+// statuses" (Gleaming Elixir, the Cure trinket ability) — but several are
+// item-specific ("Cures user of Burned status") and should only clear that
+// one flag, leaving any other active status alone. Read straight off the
+// source item's own Effect text, since that's more specific than the
+// action's generic StatusOK marker.
+function resolveCureTargets(action) {
+  const item = findSourceItemForAction(action.name);
+  if (item) {
+    const single = /cures user of (\w+) status/i.exec(item.effect || '');
+    if (single) return [single[1]];
+  }
+  return getTrackedStatusNames();
 }
 
 // Single place that decides "is/was defeated" wherever HP changes — covers the
 // main attack roll, retaliation damage, Charged's self-damage, and the manual
-// Poison tick alike, so nobody can drop to 0 HP through a side path and just
-// silently sit there with no note and no KO status.
-function checkDefeatOrRevive(character) {
+// Poison tick alike. There's no stored "KO" flag in the multi-status model —
+// defeat is purely "Current HP crossed zero" — so callers pass the HP value
+// from just before the change, and this only fires a note on an actual
+// crossing, not every time HP is checked.
+function checkDefeatOrRevive(character, prevHP) {
   if (!character) return '';
   const hp = num(character['Current HP']);
-  const isKO = (character['Status'] || '').trim().toUpperCase() === 'KO';
-  if (hp <= 0 && !isKO) {
-    character['Status'] = 'KO';
-    return `${character['Name']} is defeated!`;
-  }
-  if (hp > 0 && isKO) {
-    character['Status'] = 'OK';
-    return `${character['Name']} is back on their feet.`;
-  }
+  if (prevHP > 0 && hp <= 0) return `${character['Name']} is defeated!`;
+  if (prevHP <= 0 && hp > 0) return `${character['Name']} is back on their feet.`;
   return '';
 }
 
@@ -355,13 +446,14 @@ function spawnMob(entry) {
     : entry.name;
   if (!state.headers.length) state.headers = DEFAULT_HEADERS.slice();
   ensureEntityColumns();
+  ensureStatusColumns();
   const c = {};
   state.headers.forEach(h => { c[h] = ''; });
+  getTrackedStatusNames().forEach(name => { c[statusColumnKey(name)] = 'FALSE'; });
   const hp = String(num(entry.hp, 1));
   Object.assign(c, {
     'Name': displayName,
     'Current location': '',
-    'Status': 'OK',
     'Current HP': hp,
     'Max HP': hp,
     'Attack Bonus': String(num(entry.attackBonus, 0)),
@@ -511,6 +603,49 @@ function findSourceItemForAction(actionName) {
   return state.items.find(it => (it.action || '').trim().toLowerCase() === nameLower) || null;
 }
 
+// An item worded "Confers the X status" (Spicy Curry, Writhing Symbiote) applies it for
+// certain — unlike a weapon ability's chance to inflict, which stays a coinflip. Read off
+// the source item's own text, same approach as "Cures user of X status". Immunity still wins.
+function confersStatus(action, statusName) {
+  const item = findSourceItemForAction(action.name);
+  const m = item && /confers the (\w+) status/i.exec(item.effect || '');
+  return !!(m && m[1].toLowerCase() === statusName.toLowerCase());
+}
+
+// Which Miscellaneous actions can't run without an attacker and/or a target selected.
+// (Most Misc actions are narrative and need neither, so this is opt-in.)
+function miscRequirements(a) {
+  const n = a.name.trim().toLowerCase();
+  const src = findSourceItemForAction(a.name);
+  const srcText = (src && src.effect) || '';
+  const appliesStatus = /^Status(?!OK$)/i.test(a.effect || '');
+  return {
+    needsTarget: ['inspect', 'pickpocket', 'sacrifice'].includes(n) || appliesStatus,
+    // a Transform acts on the attacker's weapon or inventory, so there has to be one
+    needsAttacker: ['sacrifice', 'revive'].includes(n) || appliesStatus || /raises maximum hp by/i.test(srcText) || !!a.transform,
+  };
+}
+
+// Checked BEFORE the item is spent or a life is taken: an action that couldn't meaningfully
+// go through must not use up its item or kill the sacrificer for nothing. Returns the reason
+// as a string if it's a no-op, otherwise null.
+function getMiscBlocker(nameLower, attacker, target) {
+  if (nameLower === 'revive') {
+    if (!attacker) return 'No attacker selected.';
+    if (num(attacker['Current HP']) > 0) return `${attacker['Name']} isn't defeated — nothing to revive, and the item is kept.`;
+  }
+  if (nameLower === 'sacrifice') {
+    if (!attacker || !target) return 'Needs both an attacker and a target.';
+    if (num(attacker['Current HP']) <= 0) return `${attacker['Name']} has no life left to give.`;
+    if (attacker === target) return `${attacker['Name']} can't sacrifice themselves for themselves — nothing happens.`;
+    const cause = hasStatus(target, 'Parasite') ? 'Parasite' : (hasStatus(target, 'Vampire') ? 'Vampire' : null);
+    if (cause) return `${target['Name']}'s ${cause} status would negate the restoration — no sacrifice made.`;
+    const hp = num(target['Current HP']);
+    if (hp > 0 && hp >= effectiveMaxHP(target)) return `${target['Name']} is already at full health — no sacrifice made.`;
+  }
+  return null;
+}
+
 // Consumables are used up (cleared from whichever inventory slot holds them);
 // equip-slot items whose Effect/description says "Breaks after use" (e.g. the
 // Strange Crucible) are unequipped after their action fires. Neither of these
@@ -553,13 +688,15 @@ document.getElementById('sheet-upload').addEventListener('change', (e) => {
       state.headers = headers;
       state.characters = objs;
       ensureEntityColumns(); // adds Entity Type/Base Name + defaults everyone to Player if this is an older-format sheet
+      ensureStatusColumns(); // adds any missing "Status X" column (e.g. an older sheet, or one missing just one status), backfilled FALSE
       state.characters.forEach(c => {
         if (!(c['Entity Type'] || '').trim()) c['Entity Type'] = 'Player';
         reconstructMobMetadata(c); // restores ability-gating for enemies from a previously exported sheet
       });
-      state.characters.forEach(syncForcedStatus); // e.g. anyone already listed wearing Cursed/Sealed/Molten Armour
+      state.characters.forEach(c => syncForcedStatus(c)); // e.g. anyone already listed wearing Cursed/Sealed/Molten Armour
       state.attackerIdx = null;
       state.targetIdx = null;
+      state.detailIdx = null;
       document.getElementById('export-btn').disabled = false;
       renderRoster();
       renderDetail();
@@ -629,7 +766,7 @@ document.getElementById('items-upload').addEventListener('change', (e) => {
       }));
       rebuildItemGrantedActionNames();
       // Item effects (immunities, forced statuses, stat bonuses, action access) may now read differently — refresh everything.
-      state.characters.forEach(syncForcedStatus);
+      state.characters.forEach(c => syncForcedStatus(c));
       renderRoster();
       renderDetail();
       renderActionList();
@@ -665,6 +802,8 @@ document.getElementById('bestiary-upload').addEventListener('change', (e) => {
         drop1: o['Drop 1'] || '',
         drop2: o['Drop 2'] || '',
         value: o.Value || '',
+        namePlural: o['NamePlural'] || '',
+        descriptionPlural: o['DescriptionPlural'] || '',
       }));
       state.characters.forEach(reconstructMobMetadata); // refresh ability lists for already-loaded enemies against the new bestiary
       renderBestiaryList();
@@ -738,8 +877,9 @@ function renderRoster() {
     if (filter && !(name.toLowerCase().includes(filter) || loc.toLowerCase().includes(filter))) return;
     const row = document.createElement('div');
     row.className = 'roster-row' + (idx === state.attackerIdx || idx === state.targetIdx ? ' is-selected' : '');
-    const status = (c['Status'] || 'OK').trim();
-    const statusClass = status.toUpperCase() === 'OK' ? 'ok' : 'other';
+    const activeStatuses = getActiveStatuses(c);
+    const statusLabel = activeStatuses.length ? activeStatuses.join(', ') : 'OK';
+    const statusClass = activeStatuses.length ? 'other' : 'ok';
     row.innerHTML = `
       <div class="rtags">
         <span class="rtag ${idx === state.attackerIdx ? 'on-atk' : ''}" data-role="atk" title="Set as attacker">ATK</span>
@@ -747,7 +887,7 @@ function renderRoster() {
       </div>
       <div>
         <div class="rname">${escapeHtml(name)}${c.__mob ? '<span class="mob-tag">MOB</span>' : ''}</div>
-        <div class="rmeta">${escapeHtml(loc)} · <span class="status-pill ${statusClass}">${escapeHtml(status)}</span> · ${escapeHtml(c['Equipped weapon'] || 'None')}</div>
+        <div class="rmeta">${escapeHtml(loc)} · <span class="status-pill ${statusClass}">${escapeHtml(statusLabel)}</span> · ${escapeHtml(c['Equipped weapon'] || 'None')}</div>
       </div>
       <div class="rhp">${escapeHtml(c['Current HP'] ?? '')}/${escapeHtml(c['Max HP'] ?? '')}</div>
       ${c.__mob ? '<button class="remove-mob-btn" type="button" title="Remove from roster">×</button>' : '<span></span>'}
@@ -756,12 +896,14 @@ function renderRoster() {
       ev.stopPropagation();
       state.attackerIdx = (state.attackerIdx === idx) ? null : idx;
       state.selectedActionId = null;
-      renderRoster(); renderActionList(); renderActionDetail();
+      state.detailIdx = null; // un-pin so the detail pane snaps back to reflect the new ATK/TGT automatically
+      renderRoster(); renderDetail(); renderActionList(); renderActionDetail();
     });
     row.querySelector('[data-role="tgt"]').addEventListener('click', (ev) => {
       ev.stopPropagation();
       state.targetIdx = (state.targetIdx === idx) ? null : idx;
-      renderRoster(); renderActionDetail();
+      state.detailIdx = null;
+      renderRoster(); renderDetail(); renderActionDetail();
     });
     const removeBtn = row.querySelector('.remove-mob-btn');
     if (removeBtn) {
@@ -784,9 +926,230 @@ function renderRoster() {
 }
 
 // ---------- Character detail rendering ----------
+// Dispatcher: decides whether to show one pinned character full-width, both
+// ATK and TGT side by side, or the empty state — called everywhere the old
+// single renderDetail() used to be, so no call site elsewhere needs to change.
 function renderDetail() {
+  const pinned = state.detailIdx;
+  if (pinned !== null && pinned !== undefined && state.characters[pinned]) {
+    renderSingleDetail(pinned);
+    return;
+  }
+  const atk = state.attackerIdx, tgt = state.targetIdx;
+  const hasAtk = atk !== null && atk !== undefined && state.characters[atk];
+  const hasTgt = tgt !== null && tgt !== undefined && state.characters[tgt];
+  if (hasAtk && hasTgt && atk !== tgt) {
+    renderSplitDetail(atk, tgt);
+  } else if (hasAtk) {
+    renderSingleDetail(atk);
+  } else if (hasTgt) {
+    renderSingleDetail(tgt);
+  } else {
+    document.getElementById('detail-body').innerHTML = '<div class="empty-state"><span class="big">Nothing selected</span>Choose a character from the roster, or set an ATK/TGT, to view their sheet.</div>';
+  }
+}
+
+// Compact side-by-side view for when both ATK and TGT are set — the everyday
+// combat case, showing exactly what's needed to decide a roll (HP, stats,
+// statuses, equipped gear) without the full single-character layout's width.
+// Everything's still live-editable; Inventory is collapsed by default since
+// it's rarely relevant mid-decision, and clicking either name "pins" that
+// character to the full single-width sheet (via renderSingleDetail) for
+// anything the compact view doesn't show.
+function renderSplitDetail(atkIdx, tgtIdx) {
   const body = document.getElementById('detail-body');
-  const idx = state.detailIdx;
+  body.innerHTML = `<div class="split-grid">
+    ${buildCompactCard(atkIdx, 'Attacker')}
+    ${buildCompactCard(tgtIdx, 'Target')}
+  </div>`;
+  wireCompactCard(body, atkIdx);
+  wireCompactCard(body, tgtIdx);
+}
+
+function buildCompactCard(idx, roleLabel) {
+  const c = state.characters[idx];
+  if (!c) return '';
+  const maxHp = effectiveMaxHP(c);
+  const hpPct = clamp((num(c['Current HP']) / Math.max(1, maxHp)) * 100, 0, 100);
+  const gearBonus = getEquipmentStatBonus(c);
+  const statusBonus = getStatusStatBonus(c);
+  const bestiaryEntry = c.__mob ? state.bestiary.find(b => b.id === c.__bestiaryId) : null;
+
+  const compactStat = (key, label, gearKey) => {
+    const base = num(c[key], 0);
+    const total = base + gearBonus[gearKey] + statusBonus[gearKey];
+    return `
+      <div class="compact-stat-box">
+        <span class="csk">${label}</span>
+        <input type="number" data-key="${key}" value="${escapeAttr(base)}">
+        ${total !== base ? `<span class="cs-eff">→ ${total}</span>` : ''}
+      </div>`;
+  };
+
+  // Same "preserve anything unrecognized" logic as the full view's itemSelect,
+  // just in a single-column row instead of a 2-up grid — narrower is fine
+  // since dropdowns don't need horizontal room to stay usable.
+  const compactSelect = (key, label, types) => {
+    const current = (c[key] ?? '').trim();
+    const pool = types ? state.items.filter(it => types.includes(it.type)) : state.items;
+    const sorted = [...pool].sort((x, y) => x.name.localeCompare(y.name));
+    const isKnown = !current || current.toLowerCase() === 'none' || sorted.some(it => it.name.trim().toLowerCase() === current.toLowerCase());
+    let options = `<option value="None" ${!current || current.toLowerCase() === 'none' ? 'selected' : ''}>None</option>`;
+    if (!isKnown) options += `<option value="${escapeAttr(current)}" selected>${escapeHtml(current)} (unrecognized)</option>`;
+    sorted.forEach(it => {
+      const sel = it.name.trim().toLowerCase() === current.toLowerCase() ? 'selected' : '';
+      options += `<option value="${escapeAttr(it.name)}" ${sel}>${escapeHtml(it.name)}</option>`;
+    });
+    return `
+      <div class="compact-field-row">
+        <span class="csk">${label}</span>
+        <select data-key="${key}">${options}</select>
+      </div>`;
+  };
+
+  const forced = (getForcedStatus(c) || '').toLowerCase();
+  const statusList = getTrackedStatusNames().map(name => {
+    const checked = hasStatus(c, name);
+    const isForced = forced === name.toLowerCase();
+    const statusDef = state.statuses.find(s => s.name.trim().toLowerCase() === name.toLowerCase());
+    return `
+      <label class="compact-status-row${checked ? ' active' : ''}" title="${escapeAttr(statusDef ? statusDef.description : '')}">
+        <input type="checkbox" data-status="${escapeAttr(name)}" ${checked ? 'checked' : ''} ${isForced ? 'disabled' : ''}>
+        <span>${escapeHtml(name)}</span>${isForced ? '<span class="forced-tag">forced</span>' : ''}
+      </label>`;
+  }).join('');
+
+  const inventoryList = INVENTORY_SLOT_KEYS.map((key, i) => compactSelect(key, `Slot ${i + 1}`, null)).join('');
+
+  return `
+    <div class="compact-card" data-idx="${idx}">
+      <div class="compact-card-head">
+        <button class="compact-pin-btn" type="button" title="View full sheet">${escapeHtml(c['Name'] || '(unnamed)')}</button>
+        <span class="compact-role-tag role-${roleLabel.toLowerCase()}">${roleLabel}</span>
+      </div>
+      <div class="compact-loc">${escapeHtml(c['Current location'] || '—')}${c['Previous location'] ? ' · from ' + escapeHtml(c['Previous location']) : ''}</div>
+
+      <div class="compact-hp-cols">
+        <div class="compact-stat-box">
+          <span class="csk">Current</span>
+          <input type="number" data-key="Current HP" value="${escapeAttr(c['Current HP'] ?? 0)}">
+        </div>
+        <div class="compact-stat-box">
+          <span class="csk">Max</span>
+          <input type="number" data-key="Max HP" value="${escapeAttr(c['Max HP'] ?? 0)}">
+        </div>
+      </div>
+      <div class="hp-bar-track"><div class="hp-bar-fill" style="width:${hpPct}%;"></div></div>
+
+      <div class="compact-stat-row">
+        ${compactStat('Attack Bonus', 'ATK', 'attack')}
+        ${compactStat('Defence Bonus', 'DEF', 'defence')}
+        ${compactStat('Speed Bonus', 'SPD', 'speed')}
+      </div>
+
+      <div class="compact-status-list">${statusList}</div>
+      ${hasStatus(c, 'Poison') ? '<button class="btn small compact-poison-btn" type="button">Poison tick (−1 HP)</button>' : ''}
+
+      <div class="compact-equip-list">
+        ${compactSelect('Equipped weapon', 'Weapon', ['Weapon'])}
+        ${compactSelect('Equipped armour', 'Armour', ['Armour'])}
+        ${compactSelect('Equipped trinket', 'Trinket', ['Trinket'])}
+      </div>
+
+      <div class="csk" style="margin-top:2px;">Inventory</div>
+      <div class="compact-inv-list">${inventoryList}</div>
+
+      ${bestiaryEntry ? `
+      <div class="compact-field-row">
+        <span class="csk">Drops</span>
+        <span class="cs-drops">${escapeHtml(bestiaryEntry.drop1 || '—')} (70%) · ${escapeHtml(bestiaryEntry.drop2 || '—')} (30%)</span>
+      </div>
+      <button class="btn small compact-roll-drop-btn" type="button">Roll drop</button>
+      <span class="randomizer-result compact-drop-result"></span>` : ''}
+    </div>`;
+}
+
+function wireCompactCard(container, idx) {
+  const card = container.querySelector(`.compact-card[data-idx="${idx}"]`);
+  if (!card) return;
+  const c = state.characters[idx];
+  const bestiaryEntry = c.__mob ? state.bestiary.find(b => b.id === c.__bestiaryId) : null;
+
+  card.querySelectorAll('input[data-key], select[data-key]').forEach(el => {
+    el.addEventListener('change', () => {
+      const key = el.dataset.key;
+      const prevValue = c[key];
+      c[key] = el.value;
+      if (key === 'Equipped armour') syncForcedStatus(c, prevValue);
+      // Deferred one tick: the split view's two cards sit right next to each
+      // other, and replacing this input's own ancestor synchronously (inside
+      // its own change event) can race the browser's native blur/cleanup for
+      // that same input. A microtask delay lets that finish first — same
+      // state change, just avoids a harmless-but-noisy console warning.
+      setTimeout(() => {
+        renderDetail();
+        renderRoster();
+        renderActionList();
+        renderActionDetail();
+      }, 0);
+    });
+  });
+
+  card.querySelectorAll('input[type="checkbox"][data-status]').forEach(cb => {
+    cb.addEventListener('change', () => {
+      setStatus(c, cb.dataset.status, cb.checked);
+      setTimeout(() => {
+        renderDetail();
+        renderRoster();
+        renderActionList();
+        renderActionDetail();
+      }, 0);
+    });
+  });
+
+  const poisonBtn = card.querySelector('.compact-poison-btn');
+  if (poisonBtn) {
+    poisonBtn.addEventListener('click', () => {
+      state.turn += 1;
+      const prevHP = num(c['Current HP']);
+      const newHP = Math.max(0, prevHP - 1);
+      c['Current HP'] = String(newHP);
+      const note = checkDefeatOrRevive(c, prevHP);
+      addLogEntry({ cls: 'dmg', atk: c['Name'], action: 'Poison tick', tgt: null, rollLine: '', resultLine: '−1 HP', note });
+      renderDetail();
+      renderRoster();
+    });
+  }
+
+  const pinBtn = card.querySelector('.compact-pin-btn');
+  if (pinBtn) {
+    pinBtn.addEventListener('click', () => {
+      state.detailIdx = idx;
+      renderDetail();
+    });
+  }
+
+
+  const dropBtn = card.querySelector('.compact-roll-drop-btn');
+  if (dropBtn && bestiaryEntry) {
+    dropBtn.addEventListener('click', () => {
+      const has1 = !!(bestiaryEntry.drop1 && bestiaryEntry.drop1.trim() && bestiaryEntry.drop1.trim() !== '-');
+      const has2 = !!(bestiaryEntry.drop2 && bestiaryEntry.drop2.trim() && bestiaryEntry.drop2.trim() !== '-');
+      const resultEl = card.querySelector('.compact-drop-result');
+      let pick;
+      if (has1 && has2) pick = Math.random() < 0.7 ? bestiaryEntry.drop1 : bestiaryEntry.drop2;
+      else if (has1) pick = bestiaryEntry.drop1;
+      else if (has2) pick = bestiaryEntry.drop2;
+      else pick = null;
+      resultEl.textContent = pick ? `→ ${pick}` : 'No drops on file.';
+    });
+  }
+}
+
+// Shows one character's full editable sheet, full width. Used when a specific
+// character is "pinned" (clicked by name) or when only one of ATK/TGT is set.
+function renderSingleDetail(idx) {
+  const body = document.getElementById('detail-body');
   if (idx === undefined || idx === null || !state.characters[idx]) {
     body.innerHTML = '<div class="empty-state"><span class="big">Nothing selected</span>Choose a character from the roster to view and edit their sheet.</div>';
     return;
@@ -838,23 +1201,25 @@ function renderDetail() {
     </div>`;
   };
 
-  // Same "preserve anything unrecognized" pattern as itemSelect — a sheet
-  // could already have a status that predates the Statuses list, or a typo,
-  // and this makes sure switching to a dropdown never silently discards it.
-  const statusSelect = () => {
-    const current = (c['Status'] ?? '').trim();
-    const isKnown = state.statuses.some(s => s.name.trim().toLowerCase() === current.toLowerCase());
-    let options = '';
-    if (!isKnown && current) options += `<option value="${escapeAttr(current)}" selected>${escapeHtml(current)} (unrecognized)</option>`;
-    state.statuses.forEach(s => {
-      const sel = s.name.trim().toLowerCase() === current.toLowerCase() ? 'selected' : '';
-      options += `<option value="${escapeAttr(s.name)}" ${sel} title="${escapeAttr(s.description || '')}">${escapeHtml(s.name)}</option>`;
-    });
-    return `
-    <div class="field-row">
-      <span class="k">Status</span>
-      <select data-key="Status">${options}</select>
-    </div>`;
+  // A checkbox per tracked status — multiple can be active on the same
+  // character at once now, unlike the old single-dropdown model. Forced
+  // statuses (from equipped armour) are shown checked but disabled, since
+  // they're a consequence of what's worn, not something to toggle by hand —
+  // unequip the armour (or use Cure, if it's not one of the resistant ones)
+  // to actually clear them.
+  const statusCheckboxes = () => {
+    const forced = (getForcedStatus(c) || '').toLowerCase();
+    const boxes = getTrackedStatusNames().map(name => {
+      const checked = hasStatus(c, name);
+      const isForced = forced === name.toLowerCase();
+      const statusDef = state.statuses.find(s => s.name.trim().toLowerCase() === name.toLowerCase());
+      return `
+        <label class="status-check${checked ? ' active' : ''}" title="${escapeAttr(statusDef ? statusDef.description : '')}">
+          <input type="checkbox" data-status="${escapeAttr(name)}" ${checked ? 'checked' : ''} ${isForced ? 'disabled' : ''}>
+          ${escapeHtml(name)}${isForced ? ' <span class="forced-tag">forced</span>' : ''}
+        </label>`;
+    }).join('');
+    return `<div class="status-check-grid">${boxes}</div>`;
   };
 
   const equipField = (key, label) => `
@@ -869,6 +1234,7 @@ function renderDetail() {
         <h3 contenteditable="false">${escapeHtml(c['Name'] || '(unnamed)')}</h3>
         <div class="loc">${escapeHtml(c['Current location'] || '—')} ${c['Previous location'] ? '· from ' + escapeHtml(c['Previous location']) : ''}</div>
       </div>
+      ${state.attackerIdx !== null && state.targetIdx !== null && state.attackerIdx !== state.targetIdx ? '<button class="btn small" id="back-to-split-btn" type="button">⇄ Compare ATK vs TGT</button>' : ''}
     </div>
 
     <div class="hp-block">
@@ -887,7 +1253,7 @@ function renderDetail() {
     </div>
 
     <div class="section-label">Status</div>
-    ${statusSelect()}
+    ${statusCheckboxes()}
     ${hasStatus(c, 'Poison') ? `
     <div class="field-row">
       <span class="k"></span>
@@ -933,10 +1299,23 @@ function renderDetail() {
   body.querySelectorAll('input[data-key], select[data-key]').forEach(el => {
     el.addEventListener('change', () => {
       const key = el.dataset.key;
+      const prevValue = c[key];
       c[key] = el.value;
       if (key === 'Equipped armour') {
-        syncForcedStatus(c); // e.g. equipping Cursed/Sealed/Molten Armour immediately applies its forced status
+        syncForcedStatus(c, prevValue); // e.g. equipping Cursed/Sealed/Molten Armour applies its forced status; unequipping clears whatever the old armour was forcing
       }
+      renderDetail();
+      renderRoster();
+      renderActionList();
+      renderActionDetail();
+    });
+  });
+
+  // Status checkboxes (separate from the input/select listener above since
+  // there's one per tracked status, not a single field).
+  body.querySelectorAll('input[type="checkbox"][data-status]').forEach(cb => {
+    cb.addEventListener('change', () => {
+      setStatus(c, cb.dataset.status, cb.checked);
       renderDetail();
       renderRoster();
       renderActionList();
@@ -951,10 +1330,11 @@ function renderDetail() {
   if (poisonBtn) {
     poisonBtn.addEventListener('click', () => {
       state.turn += 1;
-      const newHP = Math.max(0, num(c['Current HP']) - 1);
+      const prevHP = num(c['Current HP']);
+      const newHP = Math.max(0, prevHP - 1);
       c['Current HP'] = String(newHP);
       const resultLine = '−1 HP';
-      const note = checkDefeatOrRevive(c);
+      const note = checkDefeatOrRevive(c, prevHP);
       addLogEntry({
         cls: 'dmg',
         atk: c['Name'],
@@ -983,6 +1363,14 @@ function renderDetail() {
       else if (has2) pick = bestiaryEntry.drop2;
       else pick = null;
       resultEl.textContent = pick ? `→ ${pick}` : 'No drops on file.';
+    });
+  }
+
+  const backToSplitBtn = document.getElementById('back-to-split-btn');
+  if (backToSplitBtn) {
+    backToSplitBtn.addEventListener('click', () => {
+      state.detailIdx = null; // un-pin — dispatcher will show the ATK/TGT split view again
+      renderDetail();
     });
   }
 }
@@ -1085,8 +1473,17 @@ function renderActionDetail() {
   const attacker = state.characters[state.attackerIdx];
   const target = state.characters[state.targetIdx];
 
-  const needsAttacker = a.type !== 'Miscellaneous';
-  const needsTarget = a.type !== 'Miscellaneous' || a.name.trim().toLowerCase() === 'inspect';
+  const req = a.type === 'Miscellaneous' ? miscRequirements(a) : null;
+  const needsAttacker = a.type !== 'Miscellaneous' || req.needsAttacker;
+  const needsTarget = a.type !== 'Miscellaneous' || req.needsTarget;
+  const missAtk = needsAttacker && !attacker, missTgt = needsTarget && !target;
+  const warnText = missAtk && missTgt ? 'Set an ATK and TGT in the roster first.'
+    : missAtk ? 'Set an ATK in the roster first.'
+    : missTgt ? 'Set a TGT in the roster first.' : '';
+  // A Transform can swap the equipped weapon OR drop a new item into the inventory
+  // (Fruit Seed, Aromatic Herb) — label it for what it actually does.
+  const transformItem = a.transform ? findItem(a.transform) : null;
+  const transformIsWeapon = !transformItem || transformItem.type === 'Weapon';
 
   wrap.innerHTML = `
     <h4>${escapeHtml(a.name)}</h4>
@@ -1096,16 +1493,16 @@ function renderActionDetail() {
       <span class="meta-tag">${escapeHtml(a.type)}</span>
       ${a.effect ? `<span class="meta-tag">Effect: ${escapeHtml(a.effect)}</span>` : ''}
       ${a.trigger ? `<span class="meta-tag">Target: ${escapeHtml(a.trigger)}</span>` : ''}
-      ${a.transform ? `<span class="meta-tag">Weapon becomes: ${escapeHtml(a.transform)}</span>` : ''}
+      ${a.transform ? `<span class="meta-tag">${transformIsWeapon ? 'Weapon becomes' : 'Adds to inventory'}: ${escapeHtml(a.transform)}</span>` : ''}
     </div>
-    ${a.transform && attacker ? `<div class="warn-line" style="color:var(--text-muted);border-color:var(--border-soft);background:transparent;">Attacker's weapon right now: <strong>${escapeHtml(attacker['Equipped weapon'] || 'None')}</strong></div>` : ''}
+    ${a.transform && transformIsWeapon && attacker ? `<div class="warn-line" style="color:var(--text-muted);border-color:var(--border-soft);background:transparent;">Attacker's weapon right now: <strong>${escapeHtml(attacker['Equipped weapon'] || 'None')}</strong></div>` : ''}
     ${a.notes ? `<div class="desc" style="opacity:.75;"><em>${escapeHtml(a.notes)}</em></div>` : ''}
     <div class="roll-cta">
-      <button class="primary" id="roll-btn" ${(needsAttacker && !attacker) || (needsTarget && !target) ? 'disabled' : ''}>
+      <button class="primary" id="roll-btn" ${warnText ? 'disabled' : ''}>
         ${a.type === 'Miscellaneous' ? 'Log action' : 'Roll & apply'}
       </button>
     </div>
-    ${(needsAttacker && !attacker) || (needsTarget && !target) ? '<div class="warn-line" style="margin-top:8px;">Set an ATK and TGT in the roster first.</div>' : ''}
+    ${warnText ? `<div class="warn-line" style="margin-top:8px;">${warnText}</div>` : ''}
   `;
 
   const rollBtn = document.getElementById('roll-btn');
@@ -1132,19 +1529,35 @@ function rollDie(min, max) {
 //    first empty inventory slot instead.
 // Transform is always a single item name, even when it contains a comma —
 // never split it.
+// "a Fruit Seed" / "an Aromatic Herb"
+function withArticle(name) {
+  return (/^[aeiou]/i.test(name) ? 'an ' : 'a ') + name;
+}
+
 function applyTransform(a, attacker) {
   if (!a.transform || !attacker) return null;
   const transformItem = findItem(a.transform);
 
-  if (transformItem && transformItem.type !== 'Weapon') {
+  // A Transform naming something that isn't in the Items sheet (a typo, or an item renamed
+  // without updating the Actions sheet) must do nothing. It used to fall through to the
+  // weapon swap below and quietly overwrite the attacker's real weapon with the bad name.
+  if (!transformItem) {
+    return `"${a.transform}" isn't in the Items sheet, so nothing was changed — check the Transform cell for ${a.name}.`;
+  }
+
+  // Not every Transform means "turn into". For a non-weapon target it means "produce": the new
+  // item goes into the first free inventory slot and the source item is left alone (Harvest
+  // Herb produces an Aromatic Herb and leaves the Pocket Tree intact). Whether the source is
+  // used up is decided separately, by consumeOrBreakSourceItem, from the source's own type.
+  if (transformItem.type !== 'Weapon') {
     for (const slot of INVENTORY_SLOT_KEYS) {
       const val = (attacker[slot] || '').trim();
       if (!val || val.toLowerCase() === 'none') {
         attacker[slot] = transformItem.name;
-        return `${attacker['Name']} receives a ${transformItem.name}.`;
+        return `${attacker['Name']} receives ${withArticle(transformItem.name)}.`;
       }
     }
-    return `${attacker['Name']} would receive a ${transformItem.name}, but their inventory is full.`;
+    return `${attacker['Name']} would receive ${withArticle(transformItem.name)}, but their inventory is full.`;
   }
 
   const prev = attacker['Equipped weapon'] || 'None';
@@ -1169,7 +1582,7 @@ function rollContagion(attacker, target) {
     if (isImmuneTo(target, statusName)) {
       notes.push(`${target['Name']} is immune to ${statusName} — it doesn't spread.`);
     } else if (Math.random() < 0.5) {
-      target['Status'] = statusName;
+      setStatus(target, statusName, true);
       notes.push(`${target['Name']} is now afflicted with ${statusName}, spread from ${attacker['Name']}!`);
     }
   });
@@ -1192,8 +1605,8 @@ function rollAbilityEffect(a, attacker, target) {
   if (isImmuneTo(target, statusName)) {
     return `${target['Name']} is immune to ${statusName} — no effect.`;
   }
-  if (Math.random() < 0.5) {
-    target['Status'] = statusName;
+  if (confersStatus(a, statusName) || Math.random() < 0.5) {
+    setStatus(target, statusName, true);
     return `${target['Name']} is now afflicted with ${statusName}!`;
   }
   return `${statusName} attempt failed.`;
@@ -1209,17 +1622,18 @@ function applyRetaliation(target, attacker) {
   const eff = getEquippedEffects(target);
   let attackerDefeated = false;
   if (eff.retaliateDamage > 0) {
-    const newHP = Math.max(0, num(attacker['Current HP']) - eff.retaliateDamage);
+    const prevHP = num(attacker['Current HP']);
+    const newHP = Math.max(0, prevHP - eff.retaliateDamage);
     attacker['Current HP'] = String(newHP);
     notes.push(`${attacker['Name']} takes ${eff.retaliateDamage} retaliation damage from ${target['Name']}'s armour.`);
-    const defeatNote = checkDefeatOrRevive(attacker);
-    if (defeatNote) { notes.push(defeatNote); attackerDefeated = hasStatus(attacker, 'KO'); }
+    const defeatNote = checkDefeatOrRevive(attacker, prevHP);
+    if (defeatNote) { notes.push(defeatNote); attackerDefeated = newHP <= 0; }
   }
   if (eff.retaliateStatus && !attackerDefeated) {
     if (isImmuneTo(attacker, eff.retaliateStatus)) {
       notes.push(`${attacker['Name']} is immune to the retaliation status.`);
     } else {
-      attacker['Status'] = eff.retaliateStatus;
+      setStatus(attacker, eff.retaliateStatus, true);
       notes.push(`${attacker['Name']} receives ${eff.retaliateStatus} from ${target['Name']}'s armour.`);
     }
   }
@@ -1235,20 +1649,58 @@ function performAction(a, opts = {}) {
   let count = a.rollNumber === 'entityNum' ? 1 : num(a.rollNumber, 0); // single target only, so entityNum -> 1
 
   if (a.type === 'Miscellaneous' || a.type === 'StatusClear') {
-    const transformNote = opts.skipTransform ? null : applyTransform(a, attacker);
-    const itemNote = consumeOrBreakSourceItem(a, attacker);
-    let resultLine = a.type === 'StatusClear' ? 'Status effects cleared.' : '';
+    const nameLower = a.name.trim().toLowerCase();
+    // Decided before anything is spent: a no-op leaves the item and everyone's HP alone.
+    const blocker = getMiscBlocker(nameLower, attacker, target);
+    const transformNote = (opts.skipTransform || blocker) ? null : applyTransform(a, attacker);
+    const itemNote = blocker ? null : consumeOrBreakSourceItem(a, attacker);
+    let resultLine = blocker || (a.type === 'StatusClear' ? 'Status effects cleared.' : '');
     let cureNote = '';
     let bookmarkNote = '';
+    let effectNote = '';
     let miscCls = 'info';
     let infoLines = null;
-    const nameLower = a.name.trim().toLowerCase();
 
-    if (nameLower === 'inspect') {
+    if (blocker) {
+      // nothing to do — resultLine already says why
+    } else if (nameLower === 'inspect') {
       if (target) {
         infoLines = buildInspectLines(target);
       } else {
         resultLine = 'No target selected to inspect.';
+      }
+    } else if (nameLower === 'pickpocket') {
+      // Excludes Pebble Weight from what's stealable — otherwise once a target has
+      // one, further attempts can steal that same Pebble Weight and "replace" it
+      // with another, generating junk indefinitely. Confirmed intentional: a target
+      // whose inventory is all decoys (or genuinely empty) is meant to have nothing
+      // left worth taking, not an infinite supply of worthless items to cycle through.
+      if (!target) {
+        resultLine = 'No target selected to pickpocket.';
+      } else {
+        const occupied = INVENTORY_SLOT_KEYS.filter(k => {
+          const v = (target[k] || '').trim();
+          return v && v.toLowerCase() !== 'none' && v.toLowerCase() !== 'pebble weight';
+        });
+        if (!occupied.length) {
+          resultLine = `${target['Name']} has nothing worth stealing.`;
+        } else {
+          const slot = occupied[Math.floor(Math.random() * occupied.length)];
+          const stolenName = target[slot];
+          target[slot] = 'Pebble Weight';
+          resultLine = `Stole ${stolenName} from ${target['Name']}.`;
+          if (attacker) {
+            const emptySlot = INVENTORY_SLOT_KEYS.find(k => {
+              const v = (attacker[k] || '').trim();
+              return !v || v.toLowerCase() === 'none';
+            });
+            if (emptySlot) {
+              attacker[emptySlot] = stolenName;
+            } else {
+              bookmarkNote = `${attacker['Name']}'s inventory is full — the ${stolenName} couldn't be carried.`;
+            }
+          }
+        }
       }
     } else if (nameLower === 'mark location' && attacker) {
       attacker['Bookmark'] = attacker['Current location'] || '';
@@ -1276,15 +1728,74 @@ function performAction(a, opts = {}) {
         // Unstable/Tapped weapon-state cycle out from under it.
         setTimeout(() => performAction(chosen, { skipTransform: true }), 0);
       }
+    } else if (nameLower === 'revive') {
+      // Strange Crucible: back from death at full HP (immediately — "after one cycle" is
+      // the human's call about when to use it, the tool can't wait on a cycle).
+      const prevHP = num(attacker['Current HP']);
+      const full = Math.max(1, effectiveMaxHP(attacker));
+      attacker['Current HP'] = String(full);
+      resultLine = `+${full - prevHP} HP`;
+      miscCls = 'heal';
+      effectNote = checkDefeatOrRevive(attacker, prevHP);
+    } else if (nameLower === 'sacrifice') {
+      // Ring of Sacrifice: target to full health, sacrificer to 0. Works on a defeated
+      // target too, which doubles as a revive. getMiscBlocker has already ruled out the
+      // cases where this would cost a life for nothing.
+      const prevTgt = num(target['Current HP']);
+      const prevAtk = num(attacker['Current HP']);
+      const full = Math.max(1, effectiveMaxHP(target));
+      target['Current HP'] = String(full);
+      attacker['Current HP'] = '0';
+      resultLine = `+${full - prevTgt} HP`;
+      miscCls = 'heal';
+      effectNote = [
+        `${attacker['Name']} gives their life to restore ${target['Name']} to full health.`,
+        checkDefeatOrRevive(attacker, prevAtk),
+        checkDefeatOrRevive(target, prevTgt),
+      ].filter(Boolean).join(' ');
+    } else if (a.type === 'Miscellaneous' && /^Status(?!OK$)/i.test(a.effect || '') && target) {
+      // e.g. Writhing Symbiote. Goes through the same path as every other status effect,
+      // so immunity is respected and "Confers the X status" items are guaranteed.
+      resultLine = rollAbilityEffect(a, attacker, target);
+    }
+
+    // Items worded "Raises maximum HP by N" (Bright Fruit): applies to whoever used it.
+    if (!blocker && attacker) {
+      const srcItem = findSourceItemForAction(a.name);
+      const hpUp = srcItem && /raises maximum hp by (\d+)/i.exec(srcItem.effect || '');
+      if (hpUp) {
+        const gain = parseInt(hpUp[1], 10);
+        attacker['Max HP'] = String(num(attacker['Max HP']) + gain);
+        effectNote = [effectNote, `${attacker['Name']}'s maximum HP rises by ${gain} (now ${attacker['Max HP']}).`].filter(Boolean).join(' ');
+      }
     }
 
     if (a.type === 'StatusClear' && /^StatusOK$/i.test(a.effect || '') && target) {
+      // Some cure items only target one specific status (Ice Crystal → just Burned);
+      // others (Gleaming Elixir, the Cure trinket ability) clear everything. Either
+      // way, a status forced by equipped armour (Blind/Zombie specifically) resists
+      // being cleared — everything else the target actually has active comes off.
+      const cureTargets = resolveCureTargets(a);
       const forced = (getForcedStatus(target) || '').toLowerCase();
-      if (CURE_RESISTANT_FORCED_STATUSES.includes(forced)) {
+      const cleared = [];
+      const blocked = [];
+      cureTargets.forEach(name => {
+        if (!hasStatus(target, name)) return;
+        if (forced === name.toLowerCase() && CURE_RESISTANT_FORCED_STATUSES.includes(forced)) {
+          blocked.push(name);
+        } else {
+          setStatus(target, name, false);
+          cleared.push(name);
+        }
+      });
+      if (blocked.length && !cleared.length) {
         resultLine = 'Cure failed.';
-        cureNote = `${target['Name']}'s ${forced[0].toUpperCase() + forced.slice(1)} status is forced by their armour — Cure can't remove it while it's equipped.`;
+        cureNote = `${target['Name']}'s ${blocked.join(', ')} status is forced by their armour — can't be removed while it's equipped.`;
+      } else if (!cleared.length) {
+        resultLine = `${target['Name']} had nothing to cure.`;
       } else {
-        target['Status'] = 'OK';
+        resultLine = `Cleared: ${cleared.join(', ')}.`;
+        if (blocked.length) cureNote = `${target['Name']}'s ${blocked.join(', ')} status is forced by their armour and remains.`;
       }
     }
 
@@ -1297,7 +1808,7 @@ function performAction(a, opts = {}) {
       resultLine,
       transform: transformNote,
       infoLines,
-      note: [cureNote, bookmarkNote, a.effect && !/^StatusOK$/i.test(a.effect) ? `Effect: ${a.effect}` : '', itemNote].filter(Boolean).join(' — '),
+      note: [cureNote, bookmarkNote, effectNote, a.effect && !/^Status/i.test(a.effect) ? `Effect: ${a.effect}` : '', itemNote].filter(Boolean).join(' — '),
     });
     renderRoster(); renderDetail(); renderActionList(); renderActionDetail();
     return;
@@ -1319,14 +1830,12 @@ function performAction(a, opts = {}) {
   if (isDamageType && attacker) {
     if (hasStatus(attacker, 'Charged')) {
       outgoingBonus += 1;
-      attacker['Current HP'] = String(Math.max(0, num(attacker['Current HP']) - 1));
+      const prevHP = num(attacker['Current HP']);
+      attacker['Current HP'] = String(Math.max(0, prevHP - 1));
+      setStatus(attacker, 'Charged', false); // discharges regardless of whether the self-damage also defeats them — these are independent now
       outgoingNotes.push(`${attacker['Name']}'s Charged status adds 1 damage, then discharges (costing them 1 HP).`);
-      const chargedDefeatNote = checkDefeatOrRevive(attacker);
-      if (chargedDefeatNote) {
-        outgoingNotes.push(chargedDefeatNote);
-      } else {
-        attacker['Status'] = 'OK'; // discharges normally, only if that self-damage didn't just KO them
-      }
+      const chargedDefeatNote = checkDefeatOrRevive(attacker, prevHP);
+      if (chargedDefeatNote) outgoingNotes.push(chargedDefeatNote);
     }
     if (hasStatus(attacker, 'Parasite')) {
       parasiteAttackBonus = 1;
@@ -1358,9 +1867,10 @@ function performAction(a, opts = {}) {
       finalHeal = 0;
     }
     if (target) {
-      const newHP = clamp(num(target['Current HP']) + finalHeal, 0, effectiveMaxHP(target) || finalHeal);
+      const prevHP = num(target['Current HP']);
+      const newHP = clamp(prevHP + finalHeal, 0, effectiveMaxHP(target) || finalHeal);
       target['Current HP'] = String(newHP);
-      const reviveNote = checkDefeatOrRevive(target);
+      const reviveNote = checkDefeatOrRevive(target, prevHP);
       if (reviveNote) healNote = [healNote, reviveNote].filter(Boolean).join(' ');
     }
     const misfireTransformNote = opts.skipTransform ? null : applyTransform(a, attacker);
@@ -1428,9 +1938,10 @@ function performAction(a, opts = {}) {
       total = 0;
     }
     if (target) {
-      const newHP = clamp(num(target['Current HP']) + total, 0, effectiveMaxHP(target) || total);
+      const prevHP = num(target['Current HP']);
+      const newHP = clamp(prevHP + total, 0, effectiveMaxHP(target) || total);
       target['Current HP'] = String(newHP);
-      const reviveNote = checkDefeatOrRevive(target);
+      const reviveNote = checkDefeatOrRevive(target, prevHP);
       if (reviveNote) healNegatedNote = [healNegatedNote, reviveNote].filter(Boolean).join(' ');
     }
     // Rest is now a proper HealRange roll (1 HP, guaranteed), but it also clears
@@ -1438,7 +1949,7 @@ function performAction(a, opts = {}) {
     // same behaviour as before, just hooked into the roll path instead of the
     // old no-roll one now that Rest actually rolls dice.
     if (a.name.trim().toLowerCase() === 'rest' && attacker && hasStatus(attacker, 'Poison')) {
-      attacker['Status'] = 'OK';
+      setStatus(attacker, 'Poison', false);
       healNegatedNote = [healNegatedNote, `${attacker['Name']}'s Poison clears after resting.`].filter(Boolean).join(' ');
     }
     resultLine = `+${total} HP`;
@@ -1446,15 +1957,19 @@ function performAction(a, opts = {}) {
   } else {
     cls = 'dmg';
     if (target) {
-      const newHP = Math.max(0, num(target['Current HP']) - total);
+      const prevHP = num(target['Current HP']);
+      const newHP = Math.max(0, prevHP - total);
       target['Current HP'] = String(newHP);
-      const defeatNote = checkDefeatOrRevive(target);
+      const defeatNote = checkDefeatOrRevive(target, prevHP);
       if (defeatNote) note += (note ? ' ' : '') + defeatNote;
     }
     resultLine = `−${total} HP`;
     if (attacker && hasStatus(attacker, 'Vampire')) {
-      attacker['Current HP'] = String(clamp(num(attacker['Current HP']) + 1, 0, effectiveMaxHP(attacker) || (num(attacker['Current HP']) + 1)));
+      const prevAtkHP = num(attacker['Current HP']);
+      attacker['Current HP'] = String(clamp(prevAtkHP + 1, 0, effectiveMaxHP(attacker) || (prevAtkHP + 1)));
       outgoingNotes.push(`${attacker['Name']} heals 1 HP from their Vampire status.`);
+      const vampReviveNote = checkDefeatOrRevive(attacker, prevAtkHP);
+      if (vampReviveNote) outgoingNotes.push(vampReviveNote);
     }
   }
   note = [note, undeadNote, ...outgoingNotes].filter(Boolean).join(' ');
