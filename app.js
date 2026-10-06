@@ -622,7 +622,7 @@ function miscRequirements(a) {
   return {
     needsTarget: ['inspect', 'pickpocket', 'sacrifice'].includes(n) || appliesStatus,
     // a Transform acts on the attacker's weapon or inventory, so there has to be one
-    needsAttacker: ['sacrifice', 'revive'].includes(n) || appliesStatus || /raises maximum hp by/i.test(srcText) || !!a.transform,
+    needsAttacker: ['sacrifice', 'revive'].includes(n) || appliesStatus || /raises maximum hp by/i.test(srcText) || !!a.transform || /^BuffAB/i.test(a.effect || ''),
   };
 }
 
@@ -889,7 +889,7 @@ function renderRoster() {
         <div class="rname">${escapeHtml(name)}${c.__mob ? '<span class="mob-tag">MOB</span>' : ''}</div>
         <div class="rmeta">${escapeHtml(loc)} · <span class="status-pill ${statusClass}">${escapeHtml(statusLabel)}</span> · ${escapeHtml(c['Equipped weapon'] || 'None')}</div>
       </div>
-      <div class="rhp">${escapeHtml(c['Current HP'] ?? '')}/${escapeHtml(c['Max HP'] ?? '')}</div>
+      <div class="rhp">${escapeHtml(c['Current HP'] ?? '')}/${effectiveMaxHP(c)}</div>
       ${c.__mob ? '<button class="remove-mob-btn" type="button" title="Remove from roster">×</button>' : '<span></span>'}
     `;
     row.querySelector('[data-role="atk"]').addEventListener('click', (ev) => {
@@ -1036,7 +1036,8 @@ function buildCompactCard(idx, roleLabel) {
         </div>
         <div class="compact-stat-box">
           <span class="csk">Max</span>
-          <input type="number" data-key="Max HP" value="${escapeAttr(c['Max HP'] ?? 0)}">
+          <input type="number" data-key="Max HP" data-gear-hp="${gearBonus.hp}" value="${escapeAttr(maxHp)}">
+          ${gearBonus.hp ? `<span class="cs-eff">${escapeHtml(num(c['Max HP']))} base ${gearBonus.hp > 0 ? '+' : '−'}${Math.abs(gearBonus.hp)} gear</span>` : ''}
         </div>
       </div>
       <div class="hp-bar-track"><div class="hp-bar-fill" style="width:${hpPct}%;"></div></div>
@@ -1079,7 +1080,8 @@ function wireCompactCard(container, idx) {
     el.addEventListener('change', () => {
       const key = el.dataset.key;
       const prevValue = c[key];
-      c[key] = el.value;
+      // Same conversion as the full sheet: the Max HP box shows base + gear, so store the base.
+      c[key] = el.dataset.gearHp !== undefined ? String(Math.max(0, num(el.value) - num(el.dataset.gearHp))) : el.value;
       if (key === 'Equipped armour') syncForcedStatus(c, prevValue);
       // Deferred one tick: the split view's two cards sit right next to each
       // other, and replacing this input's own ancestor synchronously (inside
@@ -1240,7 +1242,7 @@ function renderSingleDetail(idx) {
     <div class="hp-block">
       <div class="hp-row">
         <span class="label">HP</span>
-        <span class="value"><input type="number" id="hp-current" data-key="Current HP" value="${escapeAttr(c['Current HP'] ?? 0)}" style="width:3.2em;background:transparent;border:none;color:inherit;font:inherit;text-align:right;"> / <input type="number" id="hp-max" data-key="Max HP" value="${escapeAttr(c['Max HP'] ?? 0)}" style="width:3.2em;background:transparent;border:none;color:inherit;font:inherit;">${gearBonus.hp ? ` <span class="stat-gear" style="display:inline;">(${gearBonus.hp > 0 ? '+' : ''}${gearBonus.hp} gear → ${maxHp})</span>` : ''}</span>
+        <span class="value"><input type="number" id="hp-current" data-key="Current HP" value="${escapeAttr(c['Current HP'] ?? 0)}" style="width:3.2em;background:transparent;border:none;color:inherit;font:inherit;text-align:right;"> / <input type="number" id="hp-max" data-key="Max HP" data-gear-hp="${gearBonus.hp}" value="${escapeAttr(maxHp)}" style="width:3.2em;background:transparent;border:none;color:inherit;font:inherit;">${gearBonus.hp ? ` <span class="stat-gear" style="display:inline;">(${escapeHtml(num(c['Max HP']))} base ${gearBonus.hp > 0 ? '+' : '−'}${Math.abs(gearBonus.hp)} gear)</span>` : ''}</span>
       </div>
       <div class="hp-bar-track"><div class="hp-bar-fill" id="hp-bar-fill" style="width:${hpPct}%;"></div></div>
     </div>
@@ -1300,7 +1302,9 @@ function renderSingleDetail(idx) {
     el.addEventListener('change', () => {
       const key = el.dataset.key;
       const prevValue = c[key];
-      c[key] = el.value;
+      // The Max HP box shows base + gear. Storing what's shown would count the gear twice,
+      // so convert back to the base value the sheet actually holds.
+      c[key] = el.dataset.gearHp !== undefined ? String(Math.max(0, num(el.value) - num(el.dataset.gearHp))) : el.value;
       if (key === 'Equipped armour') {
         syncForcedStatus(c, prevValue); // e.g. equipping Cursed/Sealed/Molten Armour applies its forced status; unequipping clears whatever the old armour was forcing
       }
@@ -1757,6 +1761,11 @@ function performAction(a, opts = {}) {
       // e.g. Writhing Symbiote. Goes through the same path as every other status effect,
       // so immunity is respected and "Confers the X status" items are guaranteed.
       resultLine = rollAbilityEffect(a, attacker, target);
+    } else if (a.type === 'Miscellaneous' && /^BuffAB-?\d+$/i.test(a.effect || '') && attacker) {
+      // e.g. Howl: a self-buff, applied to the user (whoever is selected as ATK) whether or
+      // not a target is selected. Same code as buffs on attack abilities, so it writes to
+      // the stored Attack Bonus: permanent and stacking.
+      resultLine = rollAbilityEffect(a, attacker, null);
     }
 
     // Items worded "Raises maximum HP by N" (Bright Fruit): applies to whoever used it.
@@ -1799,16 +1808,19 @@ function performAction(a, opts = {}) {
       }
     }
 
+    // A self-buff (Howl) affects only its user, so it's logged without a target — otherwise a
+    // stale selection would read "Dire Wolf uses Howl on Alice", which is wrong.
+    const isSelfBuff = a.type === 'Miscellaneous' && /^BuffAB/i.test(a.effect || '');
     addLogEntry({
       cls: miscCls,
       atk: attacker ? attacker['Name'] : '—',
       action: a.name,
-      tgt: target ? target['Name'] : null,
+      tgt: target && !isSelfBuff ? target['Name'] : null,
       rollLine: '',
       resultLine,
       transform: transformNote,
       infoLines,
-      note: [cureNote, bookmarkNote, effectNote, a.effect && !/^Status/i.test(a.effect) ? `Effect: ${a.effect}` : '', itemNote].filter(Boolean).join(' — '),
+      note: [cureNote, bookmarkNote, effectNote, a.effect && !/^(Status|BuffAB)/i.test(a.effect) ? `Effect: ${a.effect}` : '', itemNote].filter(Boolean).join(' — '),
     });
     renderRoster(); renderDetail(); renderActionList(); renderActionDetail();
     return;
@@ -1827,7 +1839,9 @@ function performAction(a, opts = {}) {
   let outgoingBonus = 0;
   let parasiteAttackBonus = 0;
   const outgoingNotes = [];
-  if (isDamageType && attacker) {
+  // An action that rolls no dice (Howl, Toxic Spore) isn't an attack roll, so attack-roll
+  // modifiers like Charged's bonus and Parasite's per-hit bonus don't apply to it either.
+  if (isDamageType && attacker && count > 0) {
     if (hasStatus(attacker, 'Charged')) {
       outgoingBonus += 1;
       const prevHP = num(attacker['Current HP']);
@@ -1918,7 +1932,12 @@ function performAction(a, opts = {}) {
     else if (punishArmour) armourNote = "Target's Defence Bonus added to damage instead of reducing it.";
 
     if (rolls.length > 1) perHitValues = rolls.map(perHit);
-    total = rolls.length > 1 ? perHitValues.reduce((s, v) => s + v, 0) : perHit(rolls[0] ?? 0);
+    // No dice means no attack roll, so no damage. (This used to evaluate perHit(0), which
+    // turned the attacker's Attack Bonus into free damage: a Howl from an Attack Bonus 6 Dire
+    // Wolf would hit its target for 6. It only showed up once Attack Bonus could snowball.)
+    total = rolls.length === 0 ? 0
+      : rolls.length > 1 ? perHitValues.reduce((s, v) => s + v, 0)
+      : perHit(rolls[0]);
 
     const atkEffects = getEquippedEffects(attacker);
     if (atkEffects.doubleVsUndead && isUndead(target)) {
