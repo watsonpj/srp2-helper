@@ -201,11 +201,8 @@ function getItemStatDeltas(item) {
 
 // Sums stat deltas across a character's equipped weapon/armour/trinket (not
 // unequipped inventory — only gear actually worn/wielded confers bonuses).
-// These are never written back into the character's own Attack/Defence/Speed
-// Bonus fields — those stay exactly as entered, and equipment bonuses are
-// added on top only at the moment a roll or display needs the effective
-// total. That way equipping/unequipping something is instantly reversible
-// and never double-counts against a value someone already tallied by hand.
+// This is what the gear SHOULD contribute right now. syncAppliedModifiers()
+// (below) is what actually writes it into the character's bonus columns.
 function getEquipmentStatBonus(character) {
   const total = { attack: 0, defence: 0, speed: 0, hp: 0 };
   if (!character) return total;
@@ -230,17 +227,142 @@ function getStatusStatBonus(character) {
   return out;
 }
 
+// ---------- Applied modifiers: gear and Blind are written INTO the bonus columns ----------
+// The Attack / Defence / Speed Bonus and Max HP columns hold each character's REAL, current
+// numbers — worn gear and Blind included — so anything that reads the sheet (the cycle
+// images, the sheet itself) sees the truth. Four "Applied …" ledger columns record how much
+// of each number is currently gear/status, so it can be taken back out exactly when the gear
+// comes off, and so a sheet edited by hand (or an Items sheet that has been rebalanced) can be
+// reconciled the next time it's loaded:
+//     real number  =  what the character has on their own  +  applied modifiers
+// Permanent changes (Howl, Bright Fruit, typing a number into the sheet) just change the real
+// number and leave the ledger alone, which is why they survive equipping and unequipping.
+const APPLIED_COLUMNS = {
+  attack:  { stat: 'Attack Bonus',  applied: 'Applied Attack Bonus' },
+  defence: { stat: 'Defence Bonus', applied: 'Applied Defence Bonus' },
+  speed:   { stat: 'Speed Bonus',   applied: 'Applied Speed Bonus' },
+  hp:      { stat: 'Max HP',        applied: 'Applied Max HP' },
+};
+
+// Adds any missing ledger column to the loaded sheet (blank = nothing applied yet), same
+// pattern as ensureStatusColumns, so the next export carries them.
+function ensureAppliedColumns() {
+  Object.values(APPLIED_COLUMNS).forEach(({ applied }) => {
+    if (!state.headers.includes(applied)) state.headers.push(applied);
+  });
+  state.characters.forEach(c => {
+    Object.values(APPLIED_COLUMNS).forEach(({ applied }) => {
+      if (c[applied] === undefined || String(c[applied]).trim() === '') c[applied] = '0';
+    });
+  });
+}
+
+// What worn gear and active statuses should be contributing right now.
+function getModifiersThatShouldBeApplied(character) {
+  const gear = getEquipmentStatBonus(character);
+  const status = getStatusStatBonus(character);
+  return {
+    attack: gear.attack + status.attack,
+    defence: gear.defence + status.defence,
+    speed: gear.speed + status.speed,
+    hp: gear.hp,
+  };
+}
+
+// What the ledger says is already included in the stored numbers.
+function getAppliedModifiers(character) {
+  const out = {};
+  Object.keys(APPLIED_COLUMNS).forEach(key => { out[key] = num(character[APPLIED_COLUMNS[key].applied], 0); });
+  return out;
+}
+
+// The one place gear and status bonuses are written into the sheet. Compares what SHOULD be
+// applied with what the ledger says IS applied and applies only the difference, so it is safe to
+// call as often as you like: calling it twice changes nothing the second time. Returns the
+// difference it applied, or null if there was none.
+//   opts.live — true when a person has just equipped something in the tool: gained Max HP also
+//   raises Current HP by the same amount (never reviving anyone at 0). Loading or reconciling a
+//   sheet passes false, so converting a sheet never heals anybody.
+// Losing Max HP always caps Current HP at the new maximum.
+function syncAppliedModifiers(character, opts = {}) {
+  if (!character) return null;
+  const should = getModifiersThatShouldBeApplied(character);
+  const applied = getAppliedModifiers(character);
+  const delta = {};
+  let changed = false;
+  Object.keys(APPLIED_COLUMNS).forEach(key => {
+    delta[key] = should[key] - applied[key];
+    if (delta[key] !== 0) changed = true;
+  });
+  if (!changed) return null;
+
+  Object.keys(APPLIED_COLUMNS).forEach(key => {
+    if (delta[key] === 0) return;
+    const { stat, applied: col } = APPLIED_COLUMNS[key];
+    character[stat] = String(num(character[stat], 0) + delta[key]);
+    character[col] = String(should[key]);
+  });
+
+  if (delta.hp !== 0) {
+    const before = num(character['Current HP'], 0);
+    let after = before;
+    if (opts.live && delta.hp > 0 && before > 0) after = before + delta.hp;
+    if (delta.hp < 0 && after > num(character['Max HP'], 0)) after = num(character['Max HP'], 0);
+    if (after !== before) character['Current HP'] = String(after);
+  }
+  return delta;
+}
+
+// Call after anything changes what a character has equipped (the sheet editor, an item that
+// breaks, a weapon that transforms). Armour can also force a status, which can itself move a
+// bonus (Sealed Armour forces Blind) — setStatus syncs that part.
+function onEquipmentChanged(character, slotKey, previousName) {
+  syncAppliedModifiers(character, { live: true });
+  if (slotKey === 'Equipped armour') syncForcedStatus(character, previousName);
+}
+
+// Tooltip for a stat box when part of the number comes from gear/Blind.
+function appliedTitleAttr(character, key) {
+  const n = getAppliedModifiers(character)[key];
+  if (!n) return '';
+  return ` title="Includes ${n > 0 ? '+' : '−'}${Math.abs(n)} from ${key === 'hp' ? 'gear' : 'gear / Blind'}"`;
+}
+
+// The number combat and the displays use. Normally this is simply the stored column, because the
+// modifiers are already in it. If anything is somehow not applied yet (every path that changes
+// equipment or status syncs straight away, so it shouldn't happen) the difference is added here,
+// so a roll is never wrong and never counted twice.
 function effectiveStat(character, fieldName) {
   if (!character) return 0;
   const key = STAT_FIELD_TO_KEY[fieldName];
-  const gearBonus = key ? getEquipmentStatBonus(character)[key] : 0;
-  const statusBonus = key ? getStatusStatBonus(character)[key] : 0;
-  return num(character[fieldName], 0) + gearBonus + statusBonus;
+  const pending = key ? getModifiersThatShouldBeApplied(character)[key] - getAppliedModifiers(character)[key] : 0;
+  return num(character[fieldName], 0) + pending;
 }
 
 function effectiveMaxHP(character) {
   if (!character) return 0;
-  return num(character['Max HP'], 0) + getEquipmentStatBonus(character).hp;
+  return num(character['Max HP'], 0) + (getModifiersThatShouldBeApplied(character).hp - getAppliedModifiers(character).hp);
+}
+
+// A snapshot of every character's stored numbers, used to tell the GM what a load or an Items
+// upload changed, so converting a sheet is never silent.
+function snapshotBonuses() {
+  return state.characters.map(c => ({
+    c, Attack: num(c['Attack Bonus'], 0), Defence: num(c['Defence Bonus'], 0), Speed: num(c['Speed Bonus'], 0), 'Max HP': num(c['Max HP'], 0),
+  }));
+}
+function reportBonusChanges(before, headline) {
+  const lines = [];
+  before.forEach(s => {
+    const parts = [];
+    [['Attack', 'Attack Bonus'], ['Defence', 'Defence Bonus'], ['Speed', 'Speed Bonus'], ['Max HP', 'Max HP']].forEach(([label, field]) => {
+      const d = num(s.c[field], 0) - s[label];
+      if (d) parts.push(`${label} ${d > 0 ? '+' : '−'}${Math.abs(d)}`);
+    });
+    if (parts.length) lines.push(`${s.c['Name']}: ${parts.join(', ')}`);
+  });
+  if (!lines.length) return;
+  addLogEntry({ cls: 'info', customTitle: headline, rollLine: '', resultLine: `${lines.length} character${lines.length === 1 ? '' : 's'} updated`, note: lines.join(' · ') });
 }
 
 // Builds the report shown by Inspect: status, attributes (effective totals —
@@ -307,6 +429,7 @@ function hasStatus(character, statusName) {
 function setStatus(character, statusName, value) {
   if (!character) return;
   character[statusColumnKey(statusName)] = value ? 'TRUE' : 'FALSE';
+  syncAppliedModifiers(character); // Blind changes the Attack Bonus, so the number moves with the flag
 }
 
 function getActiveStatuses(character) {
@@ -447,6 +570,7 @@ function spawnMob(entry) {
   if (!state.headers.length) state.headers = DEFAULT_HEADERS.slice();
   ensureEntityColumns();
   ensureStatusColumns();
+  ensureAppliedColumns();
   const c = {};
   state.headers.forEach(h => { c[h] = ''; });
   getTrackedStatusNames().forEach(name => { c[statusColumnKey(name)] = 'FALSE'; });
@@ -464,6 +588,7 @@ function spawnMob(entry) {
     'Equipped trinket': 'None',
     'Entity Type': 'Enemy',
     'Base Name': entry.name,
+    'Applied Attack Bonus': '0', 'Applied Defence Bonus': '0', 'Applied Speed Bonus': '0', 'Applied Max HP': '0',
   });
   c.__mob = true;
   c.__bestiaryId = entry.id;
@@ -669,6 +794,7 @@ function consumeOrBreakSourceItem(action, attacker) {
     for (const slot of EQUIP_SLOT_KEYS) {
       if ((attacker[slot] || '').trim().toLowerCase() === item.name.trim().toLowerCase()) {
         attacker[slot] = 'None';
+        onEquipmentChanged(attacker, slot, item.name);
         return `${item.name} breaks after use and is removed from ${attacker['Name']}.`;
       }
     }
@@ -693,7 +819,13 @@ document.getElementById('sheet-upload').addEventListener('change', (e) => {
         if (!(c['Entity Type'] || '').trim()) c['Entity Type'] = 'Player';
         reconstructMobMetadata(c); // restores ability-gating for enemies from a previously exported sheet
       });
+      ensureAppliedColumns(); // the four "Applied …" ledger columns; blank = nothing applied yet, so an older sheet is converted below
+      const bonusesBefore = snapshotBonuses();
       state.characters.forEach(c => syncForcedStatus(c)); // e.g. anyone already listed wearing Cursed/Sealed/Molten Armour
+      // Write whatever worn gear and Blind should contribute into the bonus columns (once: the ledger remembers it).
+      // Loading never raises Current HP, so converting a sheet heals nobody.
+      state.characters.forEach(c => syncAppliedModifiers(c));
+      reportBonusChanges(bonusesBefore, 'Sheet loaded — gear and status bonuses applied');
       state.attackerIdx = null;
       state.targetIdx = null;
       state.detailIdx = null;
@@ -766,7 +898,10 @@ document.getElementById('items-upload').addEventListener('change', (e) => {
       }));
       rebuildItemGrantedActionNames();
       // Item effects (immunities, forced statuses, stat bonuses, action access) may now read differently — refresh everything.
+      const bonusesBeforeItems = snapshotBonuses();
       state.characters.forEach(c => syncForcedStatus(c));
+      state.characters.forEach(c => syncAppliedModifiers(c)); // a rebalanced item changes the bonus of everyone wearing it
+      reportBonusChanges(bonusesBeforeItems, 'Items sheet loaded — bonuses updated');
       renderRoster();
       renderDetail();
       renderActionList();
@@ -839,6 +974,8 @@ document.getElementById('statuses-upload').addEventListener('change', (e) => {
 });
 
 document.getElementById('export-btn').addEventListener('click', () => {
+  ensureAppliedColumns();
+  state.characters.forEach(c => syncAppliedModifiers(c)); // the sheet leaves the tool with every bonus up to date
   const csv = toCSV(state.headers, state.characters);
   const blob = new Blob([csv], { type: 'text/csv' });
   const url = URL.createObjectURL(blob);
@@ -971,20 +1108,14 @@ function buildCompactCard(idx, roleLabel) {
   if (!c) return '';
   const maxHp = effectiveMaxHP(c);
   const hpPct = clamp((num(c['Current HP']) / Math.max(1, maxHp)) * 100, 0, 100);
-  const gearBonus = getEquipmentStatBonus(c);
-  const statusBonus = getStatusStatBonus(c);
   const bestiaryEntry = c.__mob ? state.bestiary.find(b => b.id === c.__bestiaryId) : null;
 
-  const compactStat = (key, label, gearKey) => {
-    const base = num(c[key], 0);
-    const total = base + gearBonus[gearKey] + statusBonus[gearKey];
-    return `
-      <div class="compact-stat-box">
+  // The box holds the character's real number (gear and Blind are already in it); hover for how much is gear.
+  const compactStat = (key, label, gearKey) => `
+      <div class="compact-stat-box"${appliedTitleAttr(c, gearKey)}>
         <span class="csk">${label}</span>
-        <input type="number" data-key="${key}" value="${escapeAttr(base)}">
-        ${total !== base ? `<span class="cs-eff">→ ${total}</span>` : ''}
+        <input type="number" data-key="${key}" value="${escapeAttr(num(c[key], 0))}">
       </div>`;
-  };
 
   // Same "preserve anything unrecognized" logic as the full view's itemSelect,
   // just in a single-column row instead of a 2-up grid — narrower is fine
@@ -1036,8 +1167,7 @@ function buildCompactCard(idx, roleLabel) {
         </div>
         <div class="compact-stat-box">
           <span class="csk">Max</span>
-          <input type="number" data-key="Max HP" data-gear-hp="${gearBonus.hp}" value="${escapeAttr(maxHp)}">
-          ${gearBonus.hp ? `<span class="cs-eff">${escapeHtml(num(c['Max HP']))} base ${gearBonus.hp > 0 ? '+' : '−'}${Math.abs(gearBonus.hp)} gear</span>` : ''}
+          <input type="number" data-key="Max HP"${appliedTitleAttr(c, 'hp')} value="${escapeAttr(num(c['Max HP'], 0))}">
         </div>
       </div>
       <div class="hp-bar-track"><div class="hp-bar-fill" style="width:${hpPct}%;"></div></div>
@@ -1080,9 +1210,8 @@ function wireCompactCard(container, idx) {
     el.addEventListener('change', () => {
       const key = el.dataset.key;
       const prevValue = c[key];
-      // Same conversion as the full sheet: the Max HP box shows base + gear, so store the base.
-      c[key] = el.dataset.gearHp !== undefined ? String(Math.max(0, num(el.value) - num(el.dataset.gearHp))) : el.value;
-      if (key === 'Equipped armour') syncForcedStatus(c, prevValue);
+      c[key] = el.value;
+      if (EQUIP_SLOT_KEYS.includes(key)) onEquipmentChanged(c, key, prevValue); // the bonuses move with the gear
       // Deferred one tick: the split view's two cards sit right next to each
       // other, and replacing this input's own ancestor synchronously (inside
       // its own change event) can race the browser's native blur/cleanup for
@@ -1159,25 +1288,14 @@ function renderSingleDetail(idx) {
   const c = state.characters[idx];
   const maxHp = effectiveMaxHP(c);
   const hpPct = clamp((num(c['Current HP']) / Math.max(1, maxHp)) * 100, 0, 100);
-  const gearBonus = getEquipmentStatBonus(c);
-  const statusBonus = getStatusStatBonus(c);
   const bestiaryEntry = c.__mob ? state.bestiary.find(b => b.id === c.__bestiaryId) : null;
 
-  const editableStat = (key, label, gearKey) => {
-    const base = num(c[key], 0);
-    const gear = gearBonus[gearKey];
-    const status = statusBonus[gearKey];
-    const total = base + gear + status;
-    const parts = [];
-    if (gear) parts.push(`${gear > 0 ? '+' : ''}${gear} gear`);
-    if (status) parts.push(`${status > 0 ? '+' : ''}${status} Blind`);
-    return `
-    <div class="stat-box">
+  // The box holds the character's real number (gear and Blind are already in it); hover for how much is gear.
+  const editableStat = (key, label, gearKey) => `
+    <div class="stat-box"${appliedTitleAttr(c, gearKey)}>
       <span class="k">${label}</span>
-      <input type="number" data-key="${key}" value="${escapeAttr(base)}">
-      ${parts.length ? `<span class="stat-gear">${parts.join(', ')} → ${total}</span>` : ''}
+      <input type="number" data-key="${key}" value="${escapeAttr(num(c[key], 0))}">
     </div>`;
-  };
 
   // Builds a <select> of items filtered to the given type(s) (or all items, for
   // inventory slots). Whatever's already in the cell is preserved as a selected
@@ -1242,7 +1360,7 @@ function renderSingleDetail(idx) {
     <div class="hp-block">
       <div class="hp-row">
         <span class="label">HP</span>
-        <span class="value"><input type="number" id="hp-current" data-key="Current HP" value="${escapeAttr(c['Current HP'] ?? 0)}" style="width:3.2em;background:transparent;border:none;color:inherit;font:inherit;text-align:right;"> / <input type="number" id="hp-max" data-key="Max HP" data-gear-hp="${gearBonus.hp}" value="${escapeAttr(maxHp)}" style="width:3.2em;background:transparent;border:none;color:inherit;font:inherit;">${gearBonus.hp ? ` <span class="stat-gear" style="display:inline;">(${escapeHtml(num(c['Max HP']))} base ${gearBonus.hp > 0 ? '+' : '−'}${Math.abs(gearBonus.hp)} gear)</span>` : ''}</span>
+        <span class="value"><input type="number" id="hp-current" data-key="Current HP" value="${escapeAttr(c['Current HP'] ?? 0)}" style="width:3.2em;background:transparent;border:none;color:inherit;font:inherit;text-align:right;"> / <input type="number" id="hp-max" data-key="Max HP"${appliedTitleAttr(c, 'hp')} value="${escapeAttr(num(c['Max HP'], 0))}" style="width:3.2em;background:transparent;border:none;color:inherit;font:inherit;"></span>
       </div>
       <div class="hp-bar-track"><div class="hp-bar-fill" id="hp-bar-fill" style="width:${hpPct}%;"></div></div>
     </div>
@@ -1302,11 +1420,11 @@ function renderSingleDetail(idx) {
     el.addEventListener('change', () => {
       const key = el.dataset.key;
       const prevValue = c[key];
-      // The Max HP box shows base + gear. Storing what's shown would count the gear twice,
-      // so convert back to the base value the sheet actually holds.
-      c[key] = el.dataset.gearHp !== undefined ? String(Math.max(0, num(el.value) - num(el.dataset.gearHp))) : el.value;
-      if (key === 'Equipped armour') {
-        syncForcedStatus(c, prevValue); // e.g. equipping Cursed/Sealed/Molten Armour applies its forced status; unequipping clears whatever the old armour was forcing
+      c[key] = el.value;
+      if (EQUIP_SLOT_KEYS.includes(key)) {
+        // The bonuses move with the gear; for armour this also applies or clears a forced status
+        // (Cursed/Sealed/Molten Armour), and that can move a bonus too (Sealed Armour forces Blind).
+        onEquipmentChanged(c, key, prevValue);
       }
       renderDetail();
       renderRoster();
@@ -1566,6 +1684,7 @@ function applyTransform(a, attacker) {
 
   const prev = attacker['Equipped weapon'] || 'None';
   attacker['Equipped weapon'] = a.transform;
+  onEquipmentChanged(attacker, 'Equipped weapon', prev);
   if (prev.trim().toLowerCase() === a.transform.trim().toLowerCase()) {
     return `${attacker['Name']}'s weapon stays "${a.transform}".`;
   }
@@ -2048,8 +2167,8 @@ function addLogEntry(entry) {
   const atk = entry.atk || '—';
   const action = entry.action || '';
   const tgt = entry.tgt;
-  const title = `${atk} uses ${action}${tgt ? ' on ' + tgt : ''}`;
-  const bbTitle = `[b]${atk}[/b] uses [b]${action}[/b]${tgt ? ' on [b]' + tgt + '[/b]' : ''}`;
+  const title = entry.customTitle || `${atk} uses ${action}${tgt ? ' on ' + tgt : ''}`;
+  const bbTitle = entry.customTitle ? `[b]${entry.customTitle}[/b]` : `[b]${atk}[/b] uses [b]${action}[/b]${tgt ? ' on [b]' + tgt + '[/b]' : ''}`;
   state.logIdCounter = (state.logIdCounter || 0) + 1;
   state.log.push({ ...entry, title, bbTitle, id: state.logIdCounter, turn: state.turn, ts: new Date() });
   renderLedger();

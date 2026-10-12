@@ -11,6 +11,26 @@ local gridHeight = 7
 local offsetX = 18 -- offset per tile image when drawing grid
 local offsetY = 10
 
+-- Settings for the character sheet
+-- Defeated (0 HP) enemies are never drawn. Defeated players are drawn as corpses and do not get a cycle image of their own.
+local drawPlayerCorpses = true    -- false = leave player corpses out of the picture
+-- PLACEHOLDER PATH: change this to the real corpse sprite. It is one generic sprite, drawn once per corpse.
+-- Until the file exists no corpses are drawn, and the console says so once per run.
+local corpseSpritePath = "C:\\Users\\Admin\\Pictures\\aseprite\\lua testing\\corpses\\corpse.png"
+
+-- Player sprites are made again from the character sheet every run, so a changed weapon shows up straight away.
+-- They are written to the output folder with the names the pictures use: "<Name> SW.png", SE, NE and NW.
+local regeneratePlayerSprites = true  -- false = use the sprites already in the output folder, as before
+local spriteArtPath = "C:\\Users\\Admin\\Pictures\\aseprite\\lua testing\\"            -- holds the skin, hair, upper, lower, accessory over, accessory under, weapon over and weapon under folders
+local playerSpritePath = "C:\\Users\\Admin\\Pictures\\aseprite\\lua testing\\output\\" -- where the finished player sprites go
+
+-- Identity-obscuring items. DUMMIED OUT: the list is empty, so nothing happens yet.
+-- A player wearing one of these as their trinket is drawn in everyone else's picture as a generic stranger instead
+-- (they still see themselves normally). To switch it on, add the item here and make the stranger art:
+--     disguiseItems["Stranger Ring"] = true      and      output\stranger SW.png, SE, NE and NW
+local disguiseItems = {}
+local disguiseSpriteName = "stranger"  -- PLACEHOLDER: the file name, without the direction, of the generic stranger sprite
+
 -- Positions for player images based on direction, adjusted with new offsets
 local directionSlots = {
     SE = {
@@ -71,6 +91,34 @@ local directionEnemySlots = {
     }
 }
 
+-- The order the four direction layers are created in, which is also their stacking order (a layer created later sits in front).
+-- Back to front means the slots higher up the picture (smaller y, further away) first, so nearer sprites overlap farther ones.
+-- Worked out from the slot coordinates above, so it stays right if the slots are moved; ties go left to right.
+-- With the current slots this comes out clockwise from the top left: SE, SW, NW, NE.
+local function getDirectionDrawOrder(slotTable)
+    local info = {}
+    for direction, slotList in pairs(slotTable) do
+        local sumX, sumY = 0, 0
+        for _, slot in ipairs(slotList) do
+            sumX = sumX + slot[1]
+            sumY = sumY + slot[2]
+        end
+        table.insert(info, {name = direction, x = sumX / #slotList, y = sumY / #slotList})
+    end
+    table.sort(info, function(a, b)
+        if a.y ~= b.y then return a.y < b.y end
+        if a.x ~= b.x then return a.x < b.x end
+        return a.name < b.name
+    end)
+    local order = {}
+    for _, entry in ipairs(info) do
+        table.insert(order, entry.name)
+    end
+    return order
+end
+
+local directionDrawOrder = getDirectionDrawOrder(directionSlots)
+
 -- Function to load images and their cels
 local function loadImage(path)
     local image = app.open(path)
@@ -78,24 +126,119 @@ local function loadImage(path)
     return image, imageCel
 end
 
--- Function to read the CSV file
+-- Functions to read CSV files. The parser understands quoted cells ("Kusarigama, Sickle"), blank cells, a UTF-8 BOM and CRLF,
+-- so a comma or an empty cell can no longer shift the columns.
+-- Quote-aware CSV parser: handles "quoted, commas", "" for a literal quote, empty cells, CRLF, a UTF-8 BOM,
+-- a missing final newline, and line breaks inside quoted cells. Returns a list of rows, each a list of strings.
+local function parseCSV(text)
+    if text:sub(1, 3) == "\239\187\191" then text = text:sub(4) end   -- strip a UTF-8 BOM (Excel adds one)
+    local rows, row, field = {}, {}, {}
+    local inQuotes = false
+    local i, n = 1, #text
+
+    local function endField()
+        row[#row + 1] = table.concat(field)
+        field = {}
+    end
+    local function endRow()
+        endField()
+        if not (#row == 1 and row[1] == "") then   -- ignore completely blank lines
+            rows[#rows + 1] = row
+        end
+        row = {}
+    end
+
+    while i <= n do
+        local c = text:sub(i, i)
+        if inQuotes then
+            if c == '"' then
+                if text:sub(i + 1, i + 1) == '"' then   -- "" inside quotes is one literal quote
+                    field[#field + 1] = '"'
+                    i = i + 1
+                else
+                    inQuotes = false
+                end
+            else
+                field[#field + 1] = c
+            end
+        else
+            if c == '"' then
+                inQuotes = true
+            elseif c == "," then
+                endField()
+            elseif c == "\n" then
+                endRow()
+            elseif c ~= "\r" then
+                field[#field + 1] = c
+            end
+        end
+        i = i + 1
+    end
+    if #field > 0 or #row > 0 then endRow() end   -- last line had no trailing newline
+    return rows
+end
+
+-- Drop-in replacement for readCSV: same return shape as before (rows of fields, header removed),
+-- but returns nil plus a message when the file is missing, which is what the callers already expect.
 local function readCSV(path)
     local file = io.open(path, "r")
-    local data = {}
-    local isHeader = true
-    for line in file:lines() do
-        if isHeader then
-            isHeader = false
-        else
-            local fields = {}
-            for field in line:gmatch("[^,]+") do
-                table.insert(fields, field)
-            end
-            table.insert(data, fields)
-        end
+    if not file then
+        return nil, "Could not open CSV file: " .. path
     end
+    local text = file:read("*a")
     file:close()
-    return data
+    local rows = parseCSV(text)
+    table.remove(rows, 1)    -- header
+    return rows
+end
+
+-- Reads a CSV whose first row is a header. Returns a list of records keyed by column name (record["Current location"]),
+-- then nil, then the header names. On failure returns nil plus a message.
+local function readSheet(path)
+    local file = io.open(path, "r")
+    if not file then
+        return nil, "Could not open CSV file: " .. path
+    end
+    local text = file:read("*a")
+    file:close()
+    local rows = parseCSV(text)
+    local header = table.remove(rows, 1)
+    if not header then
+        return nil, "CSV file is empty: " .. path
+    end
+    for i, name in ipairs(header) do
+        header[i] = (name:gsub("^%s+", ""):gsub("%s+$", ""))   -- tolerate stray spaces around header names
+    end
+    local records = {}
+    for _, row in ipairs(rows) do
+        local record = {}
+        for i, name in ipairs(header) do
+            record[name] = row[i] or ""
+        end
+        records[#records + 1] = record
+    end
+    return records, nil, header
+end
+
+-- Small helpers for the character sheet
+local function rtrim(s)
+    return (s:gsub("%s+$", ""))
+end
+
+-- Anything that is not an "Enemy" counts as a player (a blank Entity Type is a player), matching the Cycle Messages page
+local function isEnemy(character)
+    return ((character["Entity Type"] or "Player"):gsub("^%s+", ""):gsub("%s+$", "")):lower() == "enemy"
+end
+
+-- 0 HP or less. (A blank or non-numeric HP is not treated as defeated.)
+local function isDefeated(character)
+    local hp = tonumber(character["Current HP"])
+    return hp ~= nil and hp <= 0
+end
+
+-- A file name from a sheet means "draw this" unless it is blank or "none.png"
+local function hasImage(fileName)
+    return fileName ~= "" and fileName:lower() ~= "none.png"
 end
 
 -- Function to create a new sprite with the necessary dimensions
@@ -142,7 +285,13 @@ local function placeImageOnLayer(layer, imageCel, x, y)
     end
 end
 
--- Function to determine the direction based on previous and current location
+-- Function to determine the direction a player travelled, from previous and current location.
+-- Seen on the minimap (the grid turned 45 degrees clockwise: letters run down-right, numbers run down-left):
+--     letter up   (A -> B) = SE        letter down   (B -> A) = NW
+--     number up   (1 -> 2) = SW        number down   (2 -> 1) = NE
+-- The label is the way the character faces (it names the image file) and it picks the slot set. The slots sit on the side
+-- the character came from, so someone who travelled SE stands towards the upper left of the picture.
+-- Assumes moves go along a row or a column.
 local function determineDirection(prevLocation, currLocation)
     if prevLocation == currLocation then
         -- If the player hasn't moved, pick a random direction for now
@@ -153,46 +302,35 @@ local function determineDirection(prevLocation, currLocation)
     -- Determine the direction based on the movement from previous to current location
     if prevLocation < currLocation then
         if prevLocation:sub(1, 1) == currLocation:sub(1, 1) then
-            return "SE"
+            return "SW" -- the number went up
         else
-            return "SW"
+            return "SE" -- the letter went up
         end
     else
         if prevLocation:sub(1, 1) == currLocation:sub(1, 1) then
-            return "NW"
+            return "NE" -- the number went down
         else
-            return "NE"
+            return "NW" -- the letter went down
         end
     end
 end
 
--- Function to invert direction (for enemies)
-local function determineOppositeDirection(prevLocation, currLocation)
-    if prevLocation == currLocation then
-        -- If the player hasn't moved, pick a random direction for now
-        local directions = {"NW", "NE", "SW", "SE"}
-        return directions[math.random(#directions)]
+-- Which sprite stands for this player in the viewer's picture: normally their own. The identity-obscuring items
+-- (disguiseItems, currently empty) make everyone else see a stranger instead.
+local function spriteNameFor(player, viewerName)
+    if player.trinket ~= "" and disguiseItems[player.trinket] and player.playerName ~= viewerName then
+        return disguiseSpriteName
     end
-
-    -- Determine the direction based on the movement from previous to current location
-    if prevLocation < currLocation then
-        if prevLocation:sub(1, 1) == currLocation:sub(1, 1) then
-            return "NW"
-        else
-            return "NE"
-        end
-    else
-        if prevLocation:sub(1, 1) == currLocation:sub(1, 1) then
-            return "SE"
-        else
-            return "SW"
-        end
-    end
+    return player.playerName
 end
 
--- Function to draw player image
-local function drawPlayerImage(playerName, prevLocation, direction)
-    local playerImagePath = "C:\\Users\\Admin\\Pictures\\aseprite\\lua testing\\output\\" .. playerName .. " " .. direction .. ".png"
+-- Function to draw player image. `spriteName` is the player's name, or the stranger (see spriteNameFor).
+local function drawPlayerImage(spriteName, prevLocation, direction)
+    local playerImagePath = playerSpritePath .. spriteName .. " " .. direction .. ".png"
+    if not app.fs.isFile(playerImagePath) then
+        print("Player sprite not found, so not drawn: " .. playerImagePath)
+        return
+    end
     local playerImage, playerImageCel = loadImage(playerImagePath)
 
     -- Find and use an available slot
@@ -212,7 +350,7 @@ end
 
 -- Function to draw all players in a given location
 -- Made global variables here; noting in case we need to revert
-local function drawPlayersAtLocation(newSprite, parentGroup, location)
+local function drawPlayersAtLocation(newSprite, parentGroup, location, viewerName)
     slots = {
         SE = {table.unpack(directionSlots.SE)},
         SW = {table.unpack(directionSlots.SW)},
@@ -228,20 +366,22 @@ local function drawPlayersAtLocation(newSprite, parentGroup, location)
 
     -- Create a new layer for each direction
     directionLayers = {}
-    for direction in pairs(slots) do
+    -- (created back to front so that nearer characters are drawn over farther ones; see directionDrawOrder)
+    for _, direction in ipairs(directionDrawOrder) do
         directionLayers[direction] = createNamedLayer(newSprite, parentGroup, "Direction " .. direction)
     end
 
     -- Draw players in the location
-    for _, player in ipairs(locationMap[location]) do
-        local playerName = player.playerName
+    for _, player in ipairs(locationMap[location] or {}) do
         local prevLocation = player.prevLocation
         local direction = determineDirection(prevLocation, location)
-        drawPlayerImage(playerName, prevLocation, direction)
+        drawPlayerImage(spriteNameFor(player, viewerName), prevLocation, direction)
     end
 end
 
 -- Function to load text character images only when needed
+local missingGlyphs = {}  -- characters already reported, so each one is named once per run
+
 local function getTextImage(char)
     local charImagePath 
     if char == "/" then
@@ -251,6 +391,13 @@ local function getTextImage(char)
     end
     if app.fs.isFile(charImagePath) then
         return loadImage(charImagePath)
+    end
+    -- A character with no image is simply left out of the text. Say so once, because for "-" that turns a negative
+    -- bonus into a positive-looking number.
+    if not missingGlyphs[char] then
+        missingGlyphs[char] = true
+        print("No font image for \"" .. char .. "\", so it is left out of the text: " .. charImagePath ..
+              (char == "-" and " (negative bonuses will be drawn WITHOUT their minus sign)" or ""))
     end
     return nil, nil
 end
@@ -323,8 +470,15 @@ local function truncateString(str, maxLength)
     end
 end
 
--- Function to draw player name, status, and Likes to the UI layer
-local function addPlayerDetails(uiLayer, playerName, status, currentHP, maxHP, attackBonus, defenceBonus, speedBonus)
+-- Status effects are drawn as 3x3 sprites in their own slots on the UI. Not implemented yet.
+-- Plan: for each "Status ..." column in the character row (Status Blind, Status Burned, ...), if it is TRUE draw that status's
+-- sprite in its slot, and if it is FALSE draw nothing.
+local function drawStatusSprites(uiLayer, playerRow)
+    -- TODO
+end
+
+-- Function to draw player name, HP and bonuses to the UI layer
+local function addPlayerDetails(uiLayer, playerName, currentHP, maxHP, attackBonus, defenceBonus, speedBonus)
 
     -- Inventory label
     drawTextOnLayer(uiLayer, "Inventory", 424, 10, "centre")
@@ -341,9 +495,6 @@ local function addPlayerDetails(uiLayer, playerName, status, currentHP, maxHP, a
 
     -- Add HP max
     --drawTextOnLayer(uiLayer, maxHP, 111, 185, "left")
-
-    -- Add status
-    drawTextOnLayer(uiLayer, status, 108, 193, "centre")
 
     -- Add attack bonus
     if tonumber(attackBonus) ~= 0 then
@@ -367,111 +518,6 @@ local function round(x)
     return math.floor(x + 0.5)  -- Adds 0.5 before flooring
 end
 
-local function drawMinimap(playerName, currentLocation)
-    -- Load the node images
-    local exploredImagePath = "C:\\Users\\Admin\\Pictures\\aseprite\\lua testing\\ui\\node explored.png"
-    local currentImagePath = "C:\\Users\\Admin\\Pictures\\aseprite\\lua testing\\ui\\node current.png"
-    local exploredImage, exploredImageCel = loadImage(exploredImagePath)
-    local currentImage, currentImageCel = loadImage(currentImagePath)
-
-    -- Read the CSV into a table
-    local mapPath = "C:\\Users\\Admin\\Pictures\\aseprite\\lua testing\\player maps\\" .. playerName .. ".csv"
-    local mapData = {}
-    for line in io.lines(mapPath) do
-        table.insert(mapData, {})
-        for value in line:gmatch("[^,]+") do
-            table.insert(mapData[#mapData], value)
-        end
-    end
-
-    -- Coordinates matrix
-    local coords = {
-        { {36,8}, {40,10}, {44,12}, {48,14}, {52,16}, {56,18}, {60,20}, {64,22} },
-        { {32,10}, {36,12}, {40,14}, {44,16}, {48,18}, {52,20}, {56,22}, {60,24} },
-        { {28,12}, {32,14}, {36,16}, {40,18}, {44,20}, {48,22}, {52,24}, {56,26} },
-        { {24,14}, {28,16}, {32,18}, {36,20}, {40,22}, {44,24}, {48,26}, {52,28} },
-        { {20,16}, {24,18}, {28,20}, {32,22}, {36,24}, {40,26}, {44,28}, {48,30} },
-        { {16,18}, {20,20}, {24,22}, {28,24}, {32,26}, {36,28}, {40,30}, {44,32} },
-        { {12,20}, {16,22}, {20,24}, {24,26}, {28,28}, {32,30}, {36,32}, {40,34} },
-        { {8,22}, {12,24}, {16,26}, {20,28}, {24,30}, {28,32}, {32,34}, {36,36} }
-    }
-
-    -- Draw the minimap
-    local minimapLayer = newSprite:newLayer()
-    minimapLayer.name = "Minimap"
-
-    for row = 1, #mapData do
-        for col = 1, #mapData[row] do
-            local x, y = table.unpack(coords[row][col])
-
-            if mapData[row][col] == "explored" then
-                local cel = newSprite:newCel(minimapLayer, 1, exploredImageCel, Point(x, y))
-            end
-
-            local location = string.char(64 + col) .. row
-            if location == currentLocation then
-                local cel = newSprite:newCel(minimapLayer, 1, currentImageCel, Point(x, y))
-            end
-        end
-    end
-
-    -- Close images
-    exploredImage:close()
-    currentImage:close()
-end
-
-local function loadEnemyData(csvPath)
-    local enemyData = {}
-    local file = io.open(csvPath, "r")
-    if not file then
-        return nil, "Could not open CSV file: " .. csvPath
-    end
-
-    local header = file:read("*l")
-    if not header then
-        file:close()
-        return nil, "CSV file is empty."
-    end
-
-    local locations = {}
-    for location in header:gmatch("([^,]+)") do
-        table.insert(locations, location)
-    end
-
-    local enemyLine = file:read("*l")
-    if enemyLine then
-        local enemies = {}
-        local currentEnemy = ""
-        local enemyIndex = 1
-        for i = 1, #enemyLine do
-            local char = string.sub(enemyLine, i, i)
-            if char == "," then
-                if currentEnemy == "" then
-                    enemies[enemyIndex] = nil
-                else
-                    enemies[enemyIndex] = currentEnemy
-                end
-                currentEnemy = ""
-                enemyIndex = enemyIndex + 1
-            else
-                currentEnemy = currentEnemy .. char
-            end
-        end
-        if currentEnemy == "" then
-            enemies[enemyIndex] = nil
-        else
-            enemies[enemyIndex] = currentEnemy
-        end
-
-        for i, location in ipairs(locations) do
-            enemyData[location] = enemies[i]
-        end
-    end
-
-    file:close()
-    return enemyData, nil
-end
-
 local function determineOppositeDirection(currentLocation, previousLocation)
     -- Your existing determineDirection function, modified to return the opposite
     local direction = determineDirection(previousLocation, currentLocation)
@@ -489,109 +535,354 @@ local function determineOppositeDirection(currentLocation, previousLocation)
     return oppositeDirections[direction] or nil
 end
 
-local function drawEnemiesAtLocation(newSprite, parentGroup, currentLocation, previousLocation)
+-- Draw the enemies standing at the viewer's location. `enemies` is a list of character-sheet rows, already filtered to
+-- this location (living ones only), and `directionEnemy` is the direction they stand and face. Sprites are found by
+-- Base Name, so "Wolf (2)" uses the Wolf images.
+-- Placement is deliberately simple for now: the enemies take the reserved enemy slots for their direction, in sheet order.
+-- Returns how many enemy slots are now taken, so that corpses can avoid them.
+-- All slot handling is in this function so the placement pass can replace it.
+local function drawEnemiesAtLocation(newSprite, parentGroup, enemies, directionEnemy)
+    if #enemies == 0 or not directionEnemy then
+        return 0
+    end
 
     local enemiesPath = "C:\\Users\\Admin\\Pictures\\aseprite\\lua testing\\enemies\\"
-    local enemiesCsvPath = "C:\\Users\\Admin\\Pictures\\aseprite\\lua testing\\smogoff rpg 2 - Enemies.csv"
 
-    local enemyData, errorMsg = loadEnemyData(enemiesCsvPath)
-    if errorMsg then
-        print(errorMsg)
-        return
+    local slots = directionEnemySlots[directionEnemy]
+    if not slots then
+        print("Enemy slots not defined for direction: " .. directionEnemy)
+        return 0
     end
-
-    local enemyName = enemyData[currentLocation]
-    if not enemyName or enemyName == "" then
-        return -- No enemy at this location
-    end
-
-    local directionEnemy = determineOppositeDirection(currentLocation, previousLocation)
-    if not directionEnemy then
-        return -- Could not determine the opposite direction
-    end
-
-    local enemySpritePath = enemiesPath .. enemyName .. " " .. directionEnemy .. ".png"
-
-    local enemySprite, enemyCel, loadError = loadImage(enemySpritePath)
-    if loadError then
-        print(loadError)
-        return
-    end
-
-    if not enemySprite or not enemyCel then
-        print("Failed to load enemy sprite: " .. enemySpritePath)
-        return
-    end
-
-    -- Define enemy slots, similar to player slots
-    local enemySlots = {
-        SE = {table.unpack(directionSlots.SE)},
-        SW = {table.unpack(directionSlots.SW)},
-        NE = {table.unpack(directionSlots.NE)},
-        NW = {table.unpack(directionSlots.NW)}
-    }
 
     local enemyDirectionLayer = createNamedLayer(newSprite, parentGroup, "Enemy Direction " .. directionEnemy)
 
-    -- Draw the enemy sprite at the appropriate slot
-    local slot = enemySlots[directionEnemy]
-    if slot then
-        placeImageOnLayer(enemyDirectionLayer, enemyCel, slot[1], slot[2])
-    else
-        print("Enemy slot not defined for direction: " .. directionEnemy);
+    for index, enemy in ipairs(enemies) do
+        if index > #slots then
+            print("No free enemy slot at " .. enemy["Current location"] .. " (" .. directionEnemy .. "): not drawing " .. enemy["Name"])
+        else
+            local spriteName = enemy["Base Name"]
+            if not spriteName or spriteName == "" then
+                spriteName = enemy["Name"]
+            end
+            local enemySpritePath = enemiesPath .. spriteName .. " " .. directionEnemy .. ".png"
+            if app.fs.isFile(enemySpritePath) then
+                local enemySprite, enemyCel = loadImage(enemySpritePath)
+                placeImageOnLayer(enemyDirectionLayer, enemyCel, slots[index][1], slots[index][2])
+                enemySprite:close()
+            else
+                print("Enemy sprite not found: " .. enemySpritePath)
+            end
+        end
     end
 
-    enemySprite:close() -- Close the loaded sprite
+    return math.min(#enemies, #slots)
+end
+
+-- Draw the corpses of defeated players: one generic sprite, once per corpse. (Enemy corpses are not drawn.)
+-- Placement rule for now: the corpses lie where the enemies would stand. They take the enemy slots that no living enemy is
+-- using first, then spill over into the free player slots (1 to 3) of the same quadrant. The placement pass may change this.
+-- Slot numbers 4-6 are the enemy slots, because the enemy slots are player slots 4-6.
+local function drawCorpsesAtLocation(corpseLayer, corpseCount, direction, enemySlotsUsed, location)
+    if not corpseLayer or corpseCount == 0 or not direction then
+        return
+    end
+
+    local slotOrder = {4, 5, 6, 1, 2, 3}
+    local corpseSprite, corpseCel = loadImage(corpseSpritePath)
+    local drawn = 0
+
+    for _, slotNumber in ipairs(slotOrder) do
+        if drawn >= corpseCount then
+            break
+        end
+        local takenByEnemy = slotNumber >= 4 and (slotNumber - 3) <= enemySlotsUsed
+        local takenByPlayer = occupiedSlots[direction][slotNumber]
+        if not takenByEnemy and not takenByPlayer then
+            local slot = directionSlots[direction][slotNumber]
+            placeImageOnLayer(corpseLayer, corpseCel, slot[1], slot[2])
+            drawn = drawn + 1
+        end
+    end
+
+    corpseSprite:close()
+
+    if drawn < corpseCount then
+        print("No free slot for " .. (corpseCount - drawn) .. " corpse(s) at " .. location .. " (" .. direction .. "): not drawn")
+    end
 end
 
 --------------------------------------------------------------------------------------------------------------------------------------------------
 
--- Load the player list CSV data
+-- Load the character sheet. Columns are looked up by header name, so their order in the sheet does not matter.
 local playerListFilename = "C:\\Users\\Admin\\Pictures\\aseprite\\lua testing\\smogoff rpg 2 test form (Responses) - Character sheets.csv"
-local playerData, err = readCSV(playerListFilename)
+local playerData, err, sheetHeader = readSheet(playerListFilename)
 if not playerData then
     print(err)
     return
 end
 
--- Create a map of players by location
--- Made global variables here; noting in case we need to revert
-locationMap = {}
-for _, playerRow in ipairs(playerData) do
-    local playerName = playerRow[1]:gsub("%s+$", "")
-    local currentLocation = playerRow[2]
-    local previousLocation = playerRow[3]
-
-    if not locationMap[currentLocation] then
-        locationMap[currentLocation] = {}
+-- Stop with a clear message if the sheet is missing a column this script reads.
+-- ("Entity Type" and "Base Name" are optional: without them every row counts as a player and sprites use Name.)
+do
+    local requiredColumns = {
+        "Name", "Current location", "Previous location", "Current HP", "Max HP", "Attack Bonus", "Defence Bonus", "Speed Bonus",
+        "Equipped weapon", "Equipped armour", "Equipped trinket",
+        "Inventory slot 1", "Inventory slot 2", "Inventory slot 3", "Inventory slot 4", "Inventory slot 5", "Inventory slot 6",
+        "Likes", "Cycle"
+    }
+    local present = {}
+    for _, name in ipairs(sheetHeader) do present[name] = true end
+    local missing = {}
+    for _, name in ipairs(requiredColumns) do
+        if not present[name] then table.insert(missing, name) end
     end
-    table.insert(locationMap[currentLocation], {
-        playerName = playerName,
-        prevLocation = previousLocation,
-        status = playerRow[4],
-        currentHP = playerRow[5],
-        maxHP = playerRow[6],
-        attackBonus = playerRow[7],
-        defenceBonus = playerRow[8],
-        speedBonus = playerRow[9]
-    })
+    if #missing > 0 then
+        print("The character sheet is missing these columns: " .. table.concat(missing, ", "))
+        return
+    end
+end
+
+--------------------------------------------------------------------------------------------------------------------------------
+-- Player sprites
+-- Each living player's four sprites (SW, SE, NE, NW) are built from the character sheet every run, so they always match the
+-- weapon the player is holding. The art is layered bottom to top like this (the order the old sprite script used):
+--     weapon under, skin, lower, upper, accessory under, hair, accessory over, weapon over
+-- Each art file holds two poses side by side: the left one becomes SW (and SE, mirrored), the right one NE (and NW, mirrored),
+-- each with 8 pixels trimmed off its outer edge.
+-- Art that is missing is left out and listed in the console; the player is still made. Without skin art there is nothing to
+-- draw on, so that player is skipped (their existing sprites, if any, are used).
+--------------------------------------------------------------------------------------------------------------------------------
+
+-- The sheet columns that say how a player looks. Colour cells can say "Option3" or just 3.
+local appearanceColumns = {
+    "Hairstyle", "Skin tone", "Hair colour", "Upper colour", "Lower colour", "Accessory over", "Accessory under", "Accessory colour"
+}
+
+local spriteTrim = 8  -- pixels trimmed off the outer edge of each pose
+
+local function trimText(s)
+    return ((s or ""):gsub("^%s+", ""):gsub("%s+$", ""))
+end
+
+-- "Option3" -> "3", "3" -> "3", anything without a number -> nil
+local function optionNumber(value)
+    return (tostring(value or ""):match("%d+"))
+end
+
+-- Blank, "None" and "none" all mean "nothing"
+local function isNone(value)
+    local v = trimText(value)
+    return v == "" or v:lower() == "none"
+end
+
+-- The art files for one player, bottom to top. Returns nil and a reason if a cell the file names depend on is blank.
+local function describeSpriteLayers(player)
+    local skin = optionNumber(player["Skin tone"])
+    local hairColour = optionNumber(player["Hair colour"])
+    local upper = optionNumber(player["Upper colour"])
+    local lower = optionNumber(player["Lower colour"])
+    local hairstyle = trimText(player["Hairstyle"]):lower()
+    if not (skin and hairColour and upper and lower) or hairstyle == "" then
+        return nil, "hairstyle, skin tone, hair, upper or lower colour is blank in the sheet"
+    end
+
+    local accessoryColour = optionNumber(player["Accessory colour"])
+    local accessoryOver = trimText(player["Accessory over"]):lower()
+    local accessoryUnder = trimText(player["Accessory under"]):lower()
+    if (not isNone(accessoryOver) or not isNone(accessoryUnder)) and not accessoryColour then
+        return nil, "an accessory is chosen but Accessory colour is blank in the sheet"
+    end
+
+    local weapon = trimText(player["Equipped weapon"]):lower()   -- the weapon held right now; art is named after the item
+    local layers = {}
+    local function add(folder, fileName, required)
+        layers[#layers + 1] = {
+            label = folder .. "\\" .. fileName .. ".png",
+            path = spriteArtPath .. folder .. "\\" .. fileName .. ".png",
+            required = required,
+        }
+    end
+    if not isNone(weapon) then add("weapon under", weapon) end
+    add("skin", "skin" .. skin, true)
+    add("lower", "lower" .. lower)
+    add("upper", "upper" .. upper)
+    if not isNone(accessoryUnder) then add("accessory under", "accessory " .. accessoryUnder .. accessoryColour) end
+    add("hair", "hair " .. hairstyle .. hairColour)
+    if not isNone(accessoryOver) then add("accessory over", "accessory " .. accessoryOver .. accessoryColour) end
+    if not isNone(weapon) then add("weapon over", weapon) end
+    return layers
+end
+
+local function flipImageHorizontally(image)
+    local width = image.width
+    local height = image.height
+    local flipped = Image(width, height)
+    for y = 0, height - 1 do
+        for x = 0, width - 1 do
+            flipped:putPixel(x, y, image:getPixel(width - 1 - x, y))
+        end
+    end
+    return flipped
+end
+
+-- Builds and saves the four sprites for one player. Returns true if they were made.
+local function makePlayerSprite(player, missingArt)
+    local name = rtrim(player["Name"])
+    local layers, reason = describeSpriteLayers(player)
+    if not layers then
+        print("No sprites made for " .. name .. ": " .. reason .. ". Their existing sprites, if any, are used.")
+        return false
+    end
+
+    -- Open the art that exists, and note what is missing
+    local opened, skinSprite = {}, nil
+    for _, layer in ipairs(layers) do
+        if app.fs.isFile(layer.path) then
+            local sprite = app.open(layer.path)
+            opened[#opened + 1] = sprite
+            if layer.required then skinSprite = sprite end
+        else
+            missingArt[layer.label] = missingArt[layer.label] or {}
+            table.insert(missingArt[layer.label], name)
+        end
+    end
+    if not skinSprite then
+        for _, sprite in ipairs(opened) do sprite:close() end
+        print("No sprites made for " .. name .. ": their skin art is missing. Their existing sprites, if any, are used.")
+        return false
+    end
+
+    -- Composite: everything drawn on top of each other, the size of the skin art
+    local width, height = skinSprite.width, skinSprite.height
+    local composite = Image(width, height)
+    for _, sprite in ipairs(opened) do
+        composite:drawImage(sprite.cels[1].image, 0, 0)
+        sprite:close()
+    end
+
+    -- Split into the two poses, trimming the outer edge of each
+    local half = math.floor(width / 2)
+    local poseWidth = half - spriteTrim
+    local southWest = Image(poseWidth, height)
+    local northEast = Image(poseWidth, height)
+    for y = 0, height - 1 do
+        for x = 0, poseWidth - 1 do
+            southWest:putPixel(x, y, composite:getPixel(x + spriteTrim, y))
+            northEast:putPixel(x, y, composite:getPixel(x + half, y))
+        end
+    end
+
+    local poses = {
+        { "SW", southWest },
+        { "SE", flipImageHorizontally(southWest) },
+        { "NE", northEast },
+        { "NW", flipImageHorizontally(northEast) },
+    }
+    local allSaved = true
+    for _, pose in ipairs(poses) do
+        local path = playerSpritePath .. name .. " " .. pose[1] .. ".png"
+        local saved, problem = pcall(function() pose[2]:saveAs(path) end)
+        if not saved then
+            print("Could not save " .. path .. ": " .. tostring(problem))
+            allSaved = false
+        end
+    end
+    return allSaved
+end
+
+-- Makes the sprites for every living player. Does nothing (with a message) if the sheet has no appearance columns yet,
+-- so a sheet without them behaves exactly as it did before.
+local function makeAllPlayerSprites(players, header)
+    local present = {}
+    for _, columnName in ipairs(header) do present[columnName] = true end
+    local absent = {}
+    for _, columnName in ipairs(appearanceColumns) do
+        if not present[columnName] then table.insert(absent, columnName) end
+    end
+    if #absent > 0 then
+        print("Player sprites were not remade: the character sheet has no column(s) " .. table.concat(absent, ", ") ..
+              ". The sprites already in the output folder are used.")
+        return
+    end
+
+    local missingArt, made = {}, 0
+    for _, player in ipairs(players) do
+        if makePlayerSprite(player, missingArt) then made = made + 1 end
+    end
+    print("Player sprites made: " .. made .. " of " .. #players)
+
+    local files = {}
+    for label in pairs(missingArt) do files[#files + 1] = label end
+    table.sort(files)
+    if #files > 0 then
+        print("Missing sprite art (the players are drawn without it):")
+        for _, label in ipairs(files) do
+            print("  " .. label .. "   <- " .. table.concat(missingArt[label], ", "))
+        end
+    end
+end
+
+-- Sort the rows into players and enemies, and group them by location.
+-- Made global variables here; noting in case we need to revert
+locationMap = {}               -- living players by location (used to draw everyone standing with the viewer)
+local enemiesAtLocation = {}   -- living enemies by location (replaces the old Enemies.csv)
+local corpsesAtLocation = {}   -- defeated players by location, drawn as corpses (a defeated enemy is not drawn at all)
+local playerRows = {}          -- living players: one cycle image is made for each (a defeated player does not get one)
+local totalCorpses = 0
+for _, playerRow in ipairs(playerData) do
+    local location = playerRow["Current location"]
+    if isEnemy(playerRow) then
+        if not isDefeated(playerRow) then
+            if not enemiesAtLocation[location] then
+                enemiesAtLocation[location] = {}
+            end
+            table.insert(enemiesAtLocation[location], playerRow)
+        end
+    elseif isDefeated(playerRow) then
+        if not corpsesAtLocation[location] then
+            corpsesAtLocation[location] = {}
+        end
+        table.insert(corpsesAtLocation[location], playerRow)
+        totalCorpses = totalCorpses + 1
+    else
+        table.insert(playerRows, playerRow)
+        if not locationMap[location] then
+            locationMap[location] = {}
+        end
+        table.insert(locationMap[location], {
+            playerName = rtrim(playerRow["Name"]),
+            prevLocation = playerRow["Previous location"],
+            trinket = rtrim(playerRow["Equipped trinket"] or "")
+        })
+    end
+end
+
+-- Corpses are only drawn if they are switched on and the corpse sprite file exists (the path is a placeholder for now)
+local corpsesEnabled = drawPlayerCorpses and totalCorpses > 0
+if corpsesEnabled and not app.fs.isFile(corpseSpritePath) then
+    print("Corpse sprite not found, so no corpses are drawn: " .. corpseSpritePath)
+    corpsesEnabled = false
+end
+
+-- Make every living player's sprites before any picture is drawn, because each picture shows other players too
+if regeneratePlayerSprites then
+    makeAllPlayerSprites(playerRows, sheetHeader)
 end
 
 --------------------------------------------------------------------------------------------------------------------------------
 
 -- Iterate over the players and generate images based on their current location
-for _, playerRow in ipairs(playerData) do
-    local playerName = playerRow[1]:gsub("%s+$", "")
-    local currentLocation = playerRow[2]
-    local previousLocation = playerRow[3]
-    local status = playerRow[4]
-    local currentHP = playerRow[5]
-    local maxHP = playerRow[6]
-    local attackBonus = playerRow[7]
-    local defenceBonus = playerRow[8]
-    local speedBonus = playerRow[9]
-    local currentLikes = playerRow[19]
-    local currentCycle = playerRow[20]
+for _, playerRow in ipairs(playerRows) do
+    local playerName = rtrim(playerRow["Name"])
+    local currentLocation = playerRow["Current location"]
+    local previousLocation = playerRow["Previous location"]
+    local currentHP = playerRow["Current HP"]
+    local maxHP = playerRow["Max HP"]
+    local attackBonus = playerRow["Attack Bonus"]
+    local defenceBonus = playerRow["Defence Bonus"]
+    local speedBonus = playerRow["Speed Bonus"]
+    local currentLikes = playerRow["Likes"]
+    local currentCycle = playerRow["Cycle"]
     local locationCSV = "C:\\Users\\Admin\\Pictures\\aseprite\\lua testing\\locations\\" .. currentLocation .. ".csv"
 
     -- Read the location CSV data
@@ -618,9 +909,14 @@ for _, playerRow in ipairs(playerData) do
     for row = 1, #csvData do
         local rowData = csvData[row]
         local tileLabel = rowData[1]
-        local tileImagePath = "C:\\Users\\Admin\\Pictures\\aseprite\\lua testing\\tiles\\" .. rowData[3]
-        local decorationBorderImagePath = "C:\\Users\\Admin\\Pictures\\aseprite\\lua testing\\decorations\\" .. rowData[4]
-        local decorationTileImagePath = "C:\\Users\\Admin\\Pictures\\aseprite\\lua testing\\decorations\\" .. rowData[5]
+        -- File names as written in the location sheet. "none.png" or a blank cell means nothing to draw.
+        -- (The old check compared the whole path to "none.png", which could never match.)
+        local tileFile = rowData[3] or ""
+        local decorationBorderFile = rowData[4] or ""
+        local decorationTileFile = rowData[5] or ""
+        local tileImagePath = "C:\\Users\\Admin\\Pictures\\aseprite\\lua testing\\tiles\\" .. tileFile
+        local decorationBorderImagePath = "C:\\Users\\Admin\\Pictures\\aseprite\\lua testing\\decorations\\" .. decorationBorderFile
+        local decorationTileImagePath = "C:\\Users\\Admin\\Pictures\\aseprite\\lua testing\\decorations\\" .. decorationTileFile
         
         local col = (row - 1) % gridWidth
         local gridRow = math.floor((row - 1) / gridWidth)
@@ -633,13 +929,13 @@ for _, playerRow in ipairs(playerData) do
         local layer = createNamedLayer(newSprite, parentGroup, layerName)
         
         -- Place the main tile image
-        if tileImagePath and tileImagePath ~= "" then
+        if tileFile ~= "" then
             local tileImage, tileImageCel = getImage(tileImagePath)
             placeImageOnLayer(layer, tileImageCel, x, y)
         end
         
         -- Place the decoration border image if available
-        if decorationBorderImagePath and decorationBorderImagePath ~= "" and decorationBorderImagePath ~= "none.png" then
+        if hasImage(decorationBorderFile) then
             local decorationLayerName = "Decoration Border " .. tileLabel
             local decorationLayer = createNamedLayer(newSprite, parentGroup, decorationLayerName)
             local decorationImage, decorationImageCel = getImage(decorationBorderImagePath)
@@ -647,7 +943,7 @@ for _, playerRow in ipairs(playerData) do
         end
         
         -- Place the decoration tile image if available
-        if decorationTileImagePath and decorationTileImagePath ~= "" and decorationTileImagePath ~= "none.png" then
+        if hasImage(decorationTileFile) then
             local decorationLayerName = "Decoration Tile " .. tileLabel
             local decorationLayer = createNamedLayer(newSprite, parentGroup, decorationLayerName)
             local decorationImage, decorationImageCel = getImage(decorationTileImagePath)
@@ -655,25 +951,29 @@ for _, playerRow in ipairs(playerData) do
         end
     end
 
+    -- Corpses of defeated players here. Their layer is created first so that they sit behind everyone who is standing.
+    local corpses = corpsesAtLocation[currentLocation] or {}
+    local corpseLayer = nil
+    if corpsesEnabled and #corpses > 0 then
+        corpseLayer = createNamedLayer(newSprite, parentGroup, "Corpses")
+    end
+
     -- Add player images for the current location
-    drawPlayersAtLocation(newSprite, parentGroup, currentLocation)
+    drawPlayersAtLocation(newSprite, parentGroup, currentLocation, playerName)
 
     --------------------------------------------------------------------------------------------------------------------------------
-    -- Draw enemies (WIP)
+    -- Draw enemies: the Enemy rows of the character sheet that are at this location. Sprites come from \enemies\ by Base Name.
+    -- The corpses are laid out with them (see drawCorpsesAtLocation), so which way they face is worked out once for both.
     --------------------------------------------------------------------------------------------------------------------------------
-    
-    drawEnemiesAtLocation(newSprite, parentGroup, currentLocation, previousLocation);
-    --------------------------------------------------------------------------------------------------------------------------------
-    -- Read Enemies.csv and find the entry for our currentLocation
-    
-    -- If there is an enemy...
-    -- Enemies facing inverse direction to player
-    --local directionEnemy = determineOppositeDirection(currentLocation, previousLocation)
 
-    -- Append directionEnemy to enemy name to load its sprite from \enemies\
-    -- enemyName .. directionEnemy .. ".png"
+    local enemies = enemiesAtLocation[currentLocation] or {}
+    local enemyDirection = nil
+    if #enemies > 0 or corpseLayer then
+        enemyDirection = determineOppositeDirection(currentLocation, previousLocation)
+    end
+    local enemySlotsUsed = drawEnemiesAtLocation(newSprite, parentGroup, enemies, enemyDirection)
+    drawCorpsesAtLocation(corpseLayer, #corpses, enemyDirection, enemySlotsUsed, currentLocation)
 
-    -- Draw at one of the appropriate predefined slots
     --------------------------------------------------------------------------------------------------------------------------------
 
     -- Add UI image layer
@@ -709,7 +1009,7 @@ for _, playerRow in ipairs(playerData) do
     local weaponLayer = newSprite:newLayer()
     weaponLayer.name = "Weapon"
     weaponLayer.parent = parentGroup
-    local weaponImagePath = "C:\\Users\\Admin\\Pictures\\aseprite\\lua testing\\items\\" .. playerRow[10] .. ".png"
+    local weaponImagePath = "C:\\Users\\Admin\\Pictures\\aseprite\\lua testing\\items\\" .. playerRow["Equipped weapon"] .. ".png"
     local weaponImage, weaponImageCel = loadImage(weaponImagePath)
     local weaponCel = newSprite:newCel(weaponLayer, 1, weaponImageCel, Point(29, 202))
     weaponImage:close()
@@ -718,7 +1018,7 @@ for _, playerRow in ipairs(playerData) do
     local armourLayer = newSprite:newLayer()
     armourLayer.name = "Armour"
     armourLayer.parent = parentGroup
-    local armourImagePath = "C:\\Users\\Admin\\Pictures\\aseprite\\lua testing\\items\\" .. playerRow[11] .. ".png"
+    local armourImagePath = "C:\\Users\\Admin\\Pictures\\aseprite\\lua testing\\items\\" .. playerRow["Equipped armour"] .. ".png"
     local armourImage, armourImageCel = loadImage(armourImagePath)
     local armourCel = newSprite:newCel(armourLayer, 1, armourImageCel, Point(58, 202))
     armourImage:close()
@@ -727,7 +1027,7 @@ for _, playerRow in ipairs(playerData) do
     local trinketLayer = newSprite:newLayer()
     trinketLayer.name = "Trinket"
     trinketLayer.parent = parentGroup
-    local trinketImagePath = "C:\\Users\\Admin\\Pictures\\aseprite\\lua testing\\items\\" .. playerRow[12] .. ".png"
+    local trinketImagePath = "C:\\Users\\Admin\\Pictures\\aseprite\\lua testing\\items\\" .. playerRow["Equipped trinket"] .. ".png"
     local trinketImage, trinketImageCel = loadImage(trinketImagePath)
     local trinketCel = newSprite:newCel(trinketLayer, 1, trinketImageCel, Point(87, 202))
     trinketImage:close()
@@ -737,7 +1037,7 @@ for _, playerRow in ipairs(playerData) do
     local item1Layer = newSprite:newLayer()
     item1Layer.name = "Item 1"
     item1Layer.parent = parentGroup
-    local item1ImagePath = "C:\\Users\\Admin\\Pictures\\aseprite\\lua testing\\items\\" .. playerRow[13] .. ".png"
+    local item1ImagePath = "C:\\Users\\Admin\\Pictures\\aseprite\\lua testing\\items\\" .. playerRow["Inventory slot 1"] .. ".png"
     local item1Image, item1ImageCel = loadImage(item1ImagePath)
     local item1Cel = newSprite:newCel(item1Layer, 1, item1ImageCel, Point(385, 35))
     item1Image:close()
@@ -746,7 +1046,7 @@ for _, playerRow in ipairs(playerData) do
     local item2Layer = newSprite:newLayer()
     item2Layer.name = "Item 2"
     item2Layer.parent = parentGroup
-    local item2ImagePath = "C:\\Users\\Admin\\Pictures\\aseprite\\lua testing\\items\\" .. playerRow[14] .. ".png"
+    local item2ImagePath = "C:\\Users\\Admin\\Pictures\\aseprite\\lua testing\\items\\" .. playerRow["Inventory slot 2"] .. ".png"
     local item2Image, item2ImageCel = loadImage(item2ImagePath)
     local item2Cel = newSprite:newCel(item2Layer, 1, item2ImageCel, Point(412, 35))
     item2Image:close()
@@ -755,7 +1055,7 @@ for _, playerRow in ipairs(playerData) do
     local item3Layer = newSprite:newLayer()
     item3Layer.name = "Item 3"
     item3Layer.parent = parentGroup
-    local item3ImagePath = "C:\\Users\\Admin\\Pictures\\aseprite\\lua testing\\items\\" .. playerRow[15] .. ".png"
+    local item3ImagePath = "C:\\Users\\Admin\\Pictures\\aseprite\\lua testing\\items\\" .. playerRow["Inventory slot 3"] .. ".png"
     local item3Image, item3ImageCel = loadImage(item3ImagePath)
     local item3Cel = newSprite:newCel(item3Layer, 1, item3ImageCel, Point(439, 35))
     item3Image:close()
@@ -764,7 +1064,7 @@ for _, playerRow in ipairs(playerData) do
     local item4Layer = newSprite:newLayer()
     item4Layer.name = "Item 4"
     item4Layer.parent = parentGroup
-    local item4ImagePath = "C:\\Users\\Admin\\Pictures\\aseprite\\lua testing\\items\\" .. playerRow[16] .. ".png"
+    local item4ImagePath = "C:\\Users\\Admin\\Pictures\\aseprite\\lua testing\\items\\" .. playerRow["Inventory slot 4"] .. ".png"
     local item4Image, item4ImageCel = loadImage(item4ImagePath)
     local item4Cel = newSprite:newCel(item4Layer, 1, item4ImageCel, Point(385, 62))
     item4Image:close()
@@ -773,7 +1073,7 @@ for _, playerRow in ipairs(playerData) do
     local item5Layer = newSprite:newLayer()
     item5Layer.name = "Item 5"
     item5Layer.parent = parentGroup
-    local item5ImagePath = "C:\\Users\\Admin\\Pictures\\aseprite\\lua testing\\items\\" .. playerRow[17] .. ".png"
+    local item5ImagePath = "C:\\Users\\Admin\\Pictures\\aseprite\\lua testing\\items\\" .. playerRow["Inventory slot 5"] .. ".png"
     local item5Image, item5ImageCel = loadImage(item5ImagePath)
     local item5Cel = newSprite:newCel(item5Layer, 1, item5ImageCel, Point(412, 62))
     item5Image:close()
@@ -782,7 +1082,7 @@ for _, playerRow in ipairs(playerData) do
     local item6Layer = newSprite:newLayer()
     item6Layer.name = "Item 6"
     item6Layer.parent = parentGroup
-    local item6ImagePath = "C:\\Users\\Admin\\Pictures\\aseprite\\lua testing\\items\\" .. playerRow[18] .. ".png"
+    local item6ImagePath = "C:\\Users\\Admin\\Pictures\\aseprite\\lua testing\\items\\" .. playerRow["Inventory slot 6"] .. ".png"
     local item6Image, item6ImageCel = loadImage(item6ImagePath)
     local item6Cel = newSprite:newCel(item6Layer, 1, item6ImageCel, Point(439, 62))
     item6Image:close()
@@ -810,8 +1110,11 @@ for _, playerRow in ipairs(playerData) do
     
     likesImage:close()
 
-    -- Add player name and status to UI layer
-    addPlayerDetails(uiLayer, playerName, status, currentHP, maxHP, attackBonus, defenceBonus, speedBonus)
+    -- Add player name, HP and bonuses to UI layer
+    addPlayerDetails(uiLayer, playerName, currentHP, maxHP, attackBonus, defenceBonus, speedBonus)
+
+    -- Status effects (not drawn yet, see drawStatusSprites)
+    drawStatusSprites(uiLayer, playerRow)
 
     -- Cycle number
     drawTextOnLayer(uiLayer, "Cycle " .. currentCycle, 222, 9, "centre")
@@ -872,12 +1175,10 @@ for _, playerRow in ipairs(playerData) do
     -- Read CSV and draw each explored node on its own layer
     local file = io.open(playerMapPath, "r")
     if file then
-        local row = 0
-        for line in file:lines() do
-            row = row + 1
-            local col = 0
-            for cell in line:gmatch("[^,]+") do
-                col = col + 1
+        local mapRows = parseCSV(file:read("*a"))
+        file:close()
+        for row, cells in ipairs(mapRows) do
+            for col, cell in ipairs(cells) do
                 local posIndex = ((row - 1) * 8) + col  -- Map cell to correct coordinates
                 local x, y = table.unpack(coords[posIndex])
 
@@ -892,7 +1193,6 @@ for _, playerRow in ipairs(playerData) do
                 end
             end
         end
-        file:close()
     end
     
     -- Function to turn currentLocation string into coords
