@@ -613,3 +613,24 @@ You can also run `python check_release.py . --site https://your-site/` from the 
 **Points of interest.** A POI's action used to be shown with no description whenever the POI sheet left it blank (the Fisherman, Chemist, Rest Stop, and the Talk ones). It now uses the Actions sheet's wording for that action name; a POI's own wording still wins. There are two `Talk` actions in the Actions sheet (one for players, one for NPCs); the one whose Notes mention an NPC is used at a point of interest.
 
 **Testing.** The target prompt is tested by an independent Python implementation of the rules that works out each player's whole Actions block straight from the CSVs and compares it with the page's, across many situations (defeated entities, someone alone elsewhere, two Wolves, attack and heal together, area attacks, every wording of "target", a defeated player alone, each point of interest). Fifteen deliberately broken versions were each caught, one of which first exposed a gap in the tests themselves.
+
+## Update: dice rolls in actions and items
+
+An action that makes a dice roll now shows it after its description, in the form `(number * (min-max))`, taken from the Actions sheet's `Roll number`, `Roll Min` and `Roll Max` columns:
+
+    [Assassinate] - Attack the target twice with killer intent. (2 * (2-4))
+    [I]Select a target: ...[/I]
+
+That is two rolls, each between 2 and 4. The roll comes before the target prompt, on the same line as the description.
+
+**Where it appears.** In the Actions list (a weapon's, a worn trinket's or armour's, a point of interest's, and an inventory item's actions), and in the inventory itself: an item that gives an action now shows that action's description and roll, for example `Gives the action [Heal] - Restore HP to the target. (1 * (2-4))`. Only items in the inventory are printed as items; worn gear contributes its actions to the Actions list but is not listed as an item.
+
+**Where the usual form would read badly or mislead**
+- A fixed amount (min equals max) shows the number once: Zap is `(1 * 2)`, not `(1 * (2-2))`.
+- A negative minimum reads `(1 * (-2 to 2))` (Cursed Magick), since `-2-2` is unreadable.
+- `entityNum` (Meteor Shower) means one roll for each entity it hits, and reads `(1 per entity * (1-5))`.
+- Nothing is printed for an action with no dice (Cure, Talk, Mark Location...), for an all-zero roll ("effect only", Toxic Spore), or for numbers that cannot be read, rather than printing something wrong.
+
+43 of the 83 actions print a roll. These choices are all in one function, `formatRoll`, near the top of `cycle-messages.js`, if you want any of them changed.
+
+**Testing.** The roll text for all 83 actions, and the whole Actions block and item lines of real messages (your sheet, a spread of weapons, worn and carried items, each point of interest), are compared against an independent Python implementation of the rules, worked out from the CSVs alone. Fifteen deliberately broken versions were each caught; one of them first exposed a gap in the tests (no worn item with a roll), which is now covered.

@@ -1,4 +1,4 @@
-window.SRP2_BUILDS = window.SRP2_BUILDS || {}; window.SRP2_BUILDS['cycle-messages.js'] = '2026-10-13b'; // srp2-build-stamp
+window.SRP2_BUILDS = window.SRP2_BUILDS || {}; window.SRP2_BUILDS['cycle-messages.js'] = '2026-10-13c'; // srp2-build-stamp
 /* ============================================================
    SRP2 Cycle Messages — generates the pre-cycle status message
    each player would receive, in BBCode, ready to paste.
@@ -384,7 +384,34 @@ function getGrantedAction(itemName) {
   if (!item || !item.action || item.action.trim() === '-') return null;
   const actionName = item.action.trim();
   const actionRow = state.actions.find(a => a.name.trim().toLowerCase() === actionName.toLowerCase());
-  return { name: actionName, description: actionRow ? actionRow.description : '' };
+  return { name: actionName, description: actionRow ? actionRow.description : '', roll: formatRoll(actionRow) };
+}
+
+// ---------- Dice rolls ----------
+// The roll an action makes, written "(number * (min-max))": "(2 * (2-4))" is two rolls, each between 2 and 4. The three numbers come from the
+// Actions sheet's Roll number, Roll Min and Roll Max columns. Where the usual form would read badly, or mislead:
+//   - a fixed amount (min equals max) shows the number once: Zap is "(1 * 2)", not "(1 * (2-2))";
+//   - a negative minimum reads "(1 * (-2 to 2))", since "-2-2" is unreadable;
+//   - "entityNum" (Meteor Shower) means one roll for each entity it hits, and reads "(1 per entity * (1-5))";
+//   - no roll at all (all zeros: "effect only", like Toxic Spore) or values that are not numbers print nothing, rather than something wrong.
+function formatRoll(action) {
+  if (!action) return '';
+  const text = v => String(v == null ? '' : v).trim();
+  const rawCount = text(action.rollNumber), rawMin = text(action.rollMin), rawMax = text(action.rollMax);
+  if (!rawCount && !rawMin && !rawMax) return '';
+  const perEntity = rawCount.toLowerCase() === 'entitynum';
+  const count = perEntity ? 1 : Number(rawCount), lo = Number(rawMin), hi = Number(rawMax);
+  if ((!perEntity && (rawCount === '' || !Number.isFinite(count))) || rawMin === '' || rawMax === '' || !Number.isFinite(lo) || !Number.isFinite(hi)) return '';
+  if (!perEntity && count === 0 && lo === 0 && hi === 0) return '';
+  const range = lo === hi ? String(lo) : (lo < 0 ? `(${lo} to ${hi})` : `(${lo}-${hi})`);
+  return `(${perEntity ? '1 per entity' : count} * ${range})`;
+}
+
+// The Actions sheet row for an action name. Where several share a name (the two "Talk"s) the one whose Notes mention an NPC is preferred,
+// because the only way to reach such an action by name alone is a point of interest, which is where an NPC is.
+function findActionRow(name) {
+  const same = state.actions.filter(a => a.name.trim().toLowerCase() === String(name).trim().toLowerCase());
+  return same.find(a => /\bnpc\b/i.test(a.notes || '')) || same[0] || null;
 }
 
 // ---------- Choosing a target ----------
@@ -406,9 +433,8 @@ function getTargetNames(player) {
 // for NPCs), the one whose Notes mention an NPC is preferred, because a point of interest is where an NPC is.
 function describePoiAction(name, ownDescription) {
   if (ownDescription && ownDescription.trim()) return ownDescription.trim();
-  const same = state.actions.filter(a => a.name.trim().toLowerCase() === name.trim().toLowerCase());
-  const pick = same.find(a => /\bnpc\b/i.test(a.notes || '')) || same[0];
-  return pick ? pick.description : '';
+  const row = findActionRow(name);
+  return row ? row.description : '';
 }
 
 // ---------- Status conditions and win conditions ----------
@@ -538,23 +564,23 @@ function buildCycleMessage(player, notes) {
   msg += '[B]Actions[/B]\n';
   const seen = new Set();
   const targets = getTargetNames(player);
-  const addAction = (name, description) => {
+  const addAction = (name, description, roll) => {
     if (!name || seen.has(name)) return;
     seen.add(name);
-    msg += `[${name}]` + (description ? ` - ${description}` : '') + '\n';
+    msg += `[${name}]` + (description ? ` - ${description}` : '') + (roll ? ` ${roll}` : '') + '\n';
     // An action that takes a target is followed by the choice to make, naming everyone present (not just enemies or just friends)
     if (targets.length && actionNeedsTarget(description)) msg += `[I]Select a target: ${targets.join(', ')}[/I]\n`;
   };
   const weaponAction = getGrantedAction(player['Equipped weapon']);
-  if (weaponAction && enemiesHere.length) addAction(weaponAction.name, weaponAction.description);
+  if (weaponAction && enemiesHere.length) addAction(weaponAction.name, weaponAction.description, weaponAction.roll);
   ['Equipped armour', 'Equipped trinket'].forEach(slot => {
     const worn = getGrantedAction(player[slot]);
-    if (worn) addAction(worn.name, worn.description);
+    if (worn) addAction(worn.name, worn.description, worn.roll);
   });
-  if (poi && poi.action && poi.action.trim()) addAction(poi.action.trim(), describePoiAction(poi.action, poi.actionDescription));
+  if (poi && poi.action && poi.action.trim()) addAction(poi.action.trim(), describePoiAction(poi.action, poi.actionDescription), formatRoll(findActionRow(poi.action)));
   for (let i = 1; i <= 6; i++) {
     const invAction = getGrantedAction(player[`Inventory slot ${i}`]);
-    if (invAction) addAction(invAction.name, invAction.description);
+    if (invAction) addAction(invAction.name, invAction.description, invAction.roll);
   }
 
   // Inventory, with the action each item gives
@@ -572,7 +598,7 @@ function buildCycleMessage(player, notes) {
         msg += `    [SIZE=3]${item.effect}[/SIZE]\n`;
         msg += `    [SIZE=3][I]${item.description}[/I][/SIZE]\n`;
         const granted = getGrantedAction(item.name);
-        if (granted) msg += `    [SIZE=3]Gives the action [${granted.name}][/SIZE]\n`;
+        if (granted) msg += `    [SIZE=3]Gives the action [${granted.name}]` + (granted.description ? ` - ${granted.description}` : '') + (granted.roll ? ` ${granted.roll}` : '') + `[/SIZE]\n`;
       } else {
         msg += `\n  - Unknown item (${name})\n`;
       }
