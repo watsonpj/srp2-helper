@@ -131,7 +131,7 @@ function setSheetStatus(text, isError) {
 function rejectSheet(message) {
   state.characters = [];
   state.headers = [];
-  document.getElementById('generate-btn').disabled = true;
+  renderOutputEmpty();   // back to "No character sheet loaded", with Generate disabled
   setSheetStatus('Could not use that file: ' + message, true);
   alert('Could not read that CSV: ' + message);   // (the status line above says the same, in case the browser blocks alerts)
 }
@@ -147,8 +147,7 @@ function loadSheetFile(file) {
       if (missing.length) throw new Error('these columns are missing: ' + missing.join(', ') + '. The columns it has: ' + headers.join(', '));
       state.headers = headers;
       state.characters = objs;
-      document.getElementById('generate-btn').disabled = false;
-      renderOutputEmpty();
+      renderOutputEmpty();   // decides Ready / no players, and the button, from what was actually loaded
       const enemies = objs.filter(isEnemyRow).length;
       setSheetStatus('Loaded ' + objs.length + ' rows (' + (objs.length - enemies) + ' players, ' + enemies + ' enemies) from ' + file.name, false);
     } catch (err) {
@@ -495,9 +494,23 @@ function buildCycleMessage(player) {
   return msg;
 }
 
+// The ONE place that decides what the output panel says AND whether Generate is available, so the two can never disagree
+// ("Ready" with a greyed-out button was possible before: the page said Ready on load, before any sheet existed).
 function renderOutputEmpty() {
-  document.getElementById('output-body').innerHTML =
-    '<div class="empty-state"><span class="big">Ready</span>Click "Generate all cycle messages" to build one message per player.</div>';
+  const btn = document.getElementById('generate-btn');
+  const body = document.getElementById('output-body');
+  const players = state.characters.filter(c => !isEnemyRow(c)).length;
+  if (!state.characters.length) {
+    btn.disabled = true;
+    body.innerHTML = '<div class="empty-state"><span class="big">No character sheet loaded</span>Upload a character sheet CSV (top right) to begin.' +
+                     '<br>A sheet uploaded on the Combat Helper page is not carried over to this page: each page keeps its own copy.</div>';
+  } else if (!players) {
+    btn.disabled = true;
+    body.innerHTML = '<div class="empty-state"><span class="big">No player rows on this sheet</span>Every row is an enemy, so there is nothing to generate.</div>';
+  } else {
+    btn.disabled = false;
+    body.innerHTML = '<div class="empty-state"><span class="big">Ready</span>Click "Generate all cycle messages" to build one message per player.</div>';
+  }
 }
 
 document.getElementById('generate-btn').addEventListener('click', () => {
