@@ -1,4 +1,4 @@
-window.SRP2_BUILDS = window.SRP2_BUILDS || {}; window.SRP2_BUILDS['cycle-messages.js'] = '2026-10-13a'; // srp2-build-stamp
+window.SRP2_BUILDS = window.SRP2_BUILDS || {}; window.SRP2_BUILDS['cycle-messages.js'] = '2026-10-13b'; // srp2-build-stamp
 /* ============================================================
    SRP2 Cycle Messages — generates the pre-cycle status message
    each player would receive, in BBCode, ready to paste.
@@ -387,6 +387,30 @@ function getGrantedAction(itemName) {
   return { name: actionName, description: actionRow ? actionRow.description : '' };
 }
 
+// ---------- Choosing a target ----------
+// An action takes a target when its description speaks of one. The Actions sheet is written that way: every attack, Heal, Cure, Sacrifice,
+// Echo, Inspect, Pickpocket and Impersonate say "target"; Rest, Talk, Shop, Revive, the consumables and the area attacks (which hit
+// everyone) do not. The wording is therefore the switch: a new action only gets the prompt if its description says "target".
+function actionNeedsTarget(description) { return /\btargets?\b/i.test(description || ''); }
+
+// Everyone who can be picked: every player and enemy at the player's location who is still standing, the player included (players
+// attack or heal whoever they see fit, themselves too). Players first, then enemies, each in sheet order. It uses the sheet Name, which is
+// unique ("Wolf", "Wolf (2)"), so a reply names exactly one entity.
+function getTargetNames(player) {
+  const here = state.characters.filter(c => c['Current location'] === player['Current location'] && !isKO(c));
+  return here.filter(c => !isEnemyRow(c)).concat(here.filter(isEnemyRow)).map(c => c['Name']);
+}
+
+// The wording to show for a point of interest's action. A point of interest may carry its own; if it does not, the Actions sheet's wording
+// for that action name is used. Where the Actions sheet has several actions with one name (there are two "Talk"s, one for players and one
+// for NPCs), the one whose Notes mention an NPC is preferred, because a point of interest is where an NPC is.
+function describePoiAction(name, ownDescription) {
+  if (ownDescription && ownDescription.trim()) return ownDescription.trim();
+  const same = state.actions.filter(a => a.name.trim().toLowerCase() === name.trim().toLowerCase());
+  const pick = same.find(a => /\bnpc\b/i.test(a.notes || '')) || same[0];
+  return pick ? pick.description : '';
+}
+
 // ---------- Status conditions and win conditions ----------
 function isTrueCell(v) { return ['true', '1', 'yes', 'y'].includes(String(v == null ? '' : v).trim().toLowerCase()); }
 
@@ -513,10 +537,13 @@ function buildCycleMessage(player, notes) {
   // trinket's or armour's action is always offered; the point of interest's action is offered while you are at it.
   msg += '[B]Actions[/B]\n';
   const seen = new Set();
+  const targets = getTargetNames(player);
   const addAction = (name, description) => {
     if (!name || seen.has(name)) return;
     seen.add(name);
     msg += `[${name}]` + (description ? ` - ${description}` : '') + '\n';
+    // An action that takes a target is followed by the choice to make, naming everyone present (not just enemies or just friends)
+    if (targets.length && actionNeedsTarget(description)) msg += `[I]Select a target: ${targets.join(', ')}[/I]\n`;
   };
   const weaponAction = getGrantedAction(player['Equipped weapon']);
   if (weaponAction && enemiesHere.length) addAction(weaponAction.name, weaponAction.description);
@@ -524,7 +551,7 @@ function buildCycleMessage(player, notes) {
     const worn = getGrantedAction(player[slot]);
     if (worn) addAction(worn.name, worn.description);
   });
-  if (poi && poi.action && poi.action.trim()) addAction(poi.action.trim(), poi.actionDescription);
+  if (poi && poi.action && poi.action.trim()) addAction(poi.action.trim(), describePoiAction(poi.action, poi.actionDescription));
   for (let i = 1; i <= 6; i++) {
     const invAction = getGrantedAction(player[`Inventory slot ${i}`]);
     if (invAction) addAction(invAction.name, invAction.description);

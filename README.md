@@ -594,3 +594,22 @@ You can also run `python check_release.py . --site https://your-site/` from the 
 **The one gap.** A page from before this update cannot check itself, because it does not contain the check. After deploying this release, press Ctrl+F5 once on each page (or open it with `?r=1`). From then on, a stale page announces itself.
 
 **Testing.** The caching behaviour was reproduced with a test server that sends GitHub-style caching headers and lets a "deployment" happen while a browser holds the old files, for both pages: a normal revisit shows the old page, the page notices, the button loads the new one, and the page's own state is never discarded. The checks cover mixed, old and missing files, a missing `version.json`, a deployment that has not finished, the exported `data.js`, and `check_release.py` against seven deliberately broken releases and against live sites that are behind or half-uploaded. Eight deliberately broken versions of the self-check were each caught.
+
+## Update: choosing a target, a refresh of the baked data, and wording for points of interest
+
+**The character sheet is not baked in, by design.** It is live game state and changes every cycle, so you upload it on the Cycle Messages page each time. That upload is what supplies each player's win condition (the sheet's `Win condition` column); the list of conditions itself is baked into `data.js`.
+
+**Baked data refreshed** from Actions (sheet 16), Items (sheet 7) and Bestiary (sheet 6), using the combat helper's own upload code, and checked by re-baking the previous sheets and getting today's data back exactly. What actually changed: the descriptions of Echo, Sacrifice, Shoot, Focus Shot and Cursed Magick ("a target" is now "the target"), and Ring of Sacrifice's effect text. Nothing else in `data.js` moved, and what gear does to stats and statuses is identical for all 107 items. The Bestiary's new `Sprite` column (art-planning notes such as "Recolour.") is not read by anything, so it is not baked in.
+
+**Target prompt.** An action that takes a target is followed by a line naming who can be picked:
+
+    [Zap] - Zap the target for a set amount.
+    [I]Select a target: wdadwawdawd, mr big gobbler, cockus noseus, Wolf, Wolf (2)[/I]
+
+- **Which actions:** an action takes a target when its description speaks of one ("target" or "targets", including "target's"). That is how the Actions sheet is already written: all attacks, Heal, Cure, Sacrifice, Echo, Inspect, Pickpocket and Impersonate (43 of 83). Rest, Talk, Shop, Revive, the consumables and the area attacks (Meteor Shower, Antimatter, Quake, which hit everyone) have no prompt. **The wording is the switch**: a new action that takes a target only gets the prompt if its description says "target".
+- **Who is listed:** every player and enemy at the player's location who is still standing, including the player themself. There is no split between attacking and healing: players choose as they see fit. Players come first, then enemies, each in sheet order. Names are the sheet's `Name`, which is unique ("Wolf", "Wolf (2)"), so a reply names exactly one entity.
+- Defeated entities are not listed, and nothing is printed if nobody is left to pick. An action that comes from two places (a worn Blessed Armlet and one in the inventory) is listed once, with one prompt.
+
+**Points of interest.** A POI's action used to be shown with no description whenever the POI sheet left it blank (the Fisherman, Chemist, Rest Stop, and the Talk ones). It now uses the Actions sheet's wording for that action name; a POI's own wording still wins. There are two `Talk` actions in the Actions sheet (one for players, one for NPCs); the one whose Notes mention an NPC is used at a point of interest.
+
+**Testing.** The target prompt is tested by an independent Python implementation of the rules that works out each player's whole Actions block straight from the CSVs and compares it with the page's, across many situations (defeated entities, someone alone elsewhere, two Wolves, attack and heal together, area attacks, every wording of "target", a defeated player alone, each point of interest). Fifteen deliberately broken versions were each caught, one of which first exposed a gap in the tests themselves.
