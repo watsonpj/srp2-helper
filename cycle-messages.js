@@ -1,3 +1,4 @@
+window.SRP2_BUILDS = window.SRP2_BUILDS || {}; window.SRP2_BUILDS['cycle-messages.js'] = '2026-10-13a'; // srp2-build-stamp
 /* ============================================================
    SRP2 Cycle Messages — generates the pre-cycle status message
    each player would receive, in BBCode, ready to paste.
@@ -339,6 +340,10 @@ function renderMessageList() {
 // ---------- Export updated data.js ----------
 document.getElementById('export-data-btn').addEventListener('click', () => {
   const lines = [];
+  // The exported data.js says which release it belongs to, using the build id this page itself was loaded with, so that the pages'
+  // self-check (see the build check block in the HTML) does not flag a data.js you exported from the current page.
+  const buildMeta = document.querySelector('meta[name="srp2-build"]');
+  lines.push(`window.SRP2_BUILDS = window.SRP2_BUILDS || {}; window.SRP2_BUILDS['data.js'] = '${buildMeta ? buildMeta.content : ''}';`);
   lines.push('// Shared static reference data for SRP2 tools (combat helper + cycle messages).');
   lines.push('// Regenerated via the "Export updated data.js" button in Cycle Messages.');
   lines.push('');

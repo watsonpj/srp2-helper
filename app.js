@@ -1,3 +1,4 @@
+window.SRP2_BUILDS = window.SRP2_BUILDS || {}; window.SRP2_BUILDS['app.js'] = '2026-10-13a'; // srp2-build-stamp
 /* ============================================================
    SRP2 Session Ledger — app logic
    All state lives in memory (no localStorage), everything runs

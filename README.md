@@ -567,3 +567,30 @@ As a last safety net, `effectiveStat` and `effectiveMaxHP` add any not-yet-appli
 **Where NPCs and points of interest come from.** There is no separate NPC data: a location's POI is read from the centre tile (D4) of its location grid, using that tile's decoration image name, so a location has at most one. This only works once the location grids are loaded (the "locations" folder upload), which is why a message made without them has no region or POI line.
 
 **Testing.** Scenario tests for each addition and the section order, a check that the new page says exactly what the old one did for a sheet with nothing new in it, and twelve deliberately broken versions of the code to confirm the tests catch each one.
+
+## Update: knowing which version you are running (and why a new deployment can look unchanged)
+
+**The problem.** A browser keeps a page it has already fetched for a while and, within that time, shows it again without asking the server anything. As far as I know GitHub Pages tells browsers to do this for about ten minutes (check your own site's headers with `curl -I`). The `?v=` numbers on the script tags only protect the *scripts*, and only once the page that contains them is fresh. So right after a deployment you can open the page, get the old copy straight from the browser's cache, and nothing on it can know it is out of date. This was reproduced here: after the new files were deployed, a normal revisit sent no request to the server at all.
+
+**What every release now carries.** One build id (for example `2026-10-13a`) is stamped into every page, `app.js`, `cycle-messages.js`, `data.js` and a new small file, `version.json`. Each page then checks itself:
+- A small badge in the bottom-right corner shows the build the page is running, and whether it is up to date.
+- If a script file on the page is from a different build than the page asked for, a **Mixed versions** banner names the file and both builds.
+- The page asks the server (bypassing every cache) which build is deployed. If that differs from its own, an **update banner** appears with a *Reload to update* button. It never reloads by itself, because reloading clears whatever is loaded into the page (the character sheet, the log). It also re-checks when you come back to the tab.
+- If clicking Reload still gives the old page, the banner says the deployment may not have finished, or that the files were published to a different branch.
+- If `version.json` is missing from the server, the badge says the update check is unavailable and nothing else happens.
+- The `data.js` you export from the Cycle Messages page carries the same stamp, so it does not trigger a Mixed versions banner when you deploy it.
+
+**Telling a stale cache from a deployment that did not happen (about a minute).**
+1. Read the badge on the page you are looking at: that is the build you are running.
+2. Open `your-site/version.json?x=1` in the browser. That is the build the server is giving out.
+3. If they differ, it is the cache: press Ctrl+F5 (or add `?r=1` to the address). If `version.json` itself is the old build, the files have not been published yet: wait a few minutes, then check that GitHub Pages is publishing the branch you pushed to and that the deployment has finished.
+
+You can also run `python check_release.py . --site https://your-site/` from the folder you deployed. It checks that the folder is one consistent release and, bypassing caches, what the live site is serving, and it says which of the two situations you are in.
+
+**Before you upload.** Run `python check_release.py` in the folder. It checks that every page and script carries the same build id, that every script tag asks for it, that `version.json` agrees, and that nothing is missing.
+
+**Upload all of these together:** `index.html`, `cycle-messages.html`, `app.js`, `cycle-messages.js`, `data.js`, `version.json`.
+
+**The one gap.** A page from before this update cannot check itself, because it does not contain the check. After deploying this release, press Ctrl+F5 once on each page (or open it with `?r=1`). From then on, a stale page announces itself.
+
+**Testing.** The caching behaviour was reproduced with a test server that sends GitHub-style caching headers and lets a "deployment" happen while a browser holds the old files, for both pages: a normal revisit shows the old page, the page notices, the button loads the new one, and the page's own state is never discarded. The checks cover mixed, old and missing files, a missing `version.json`, a deployment that has not finished, the exported `data.js`, and `check_release.py` against seven deliberately broken releases and against live sites that are behind or half-uploaded. Eight deliberately broken versions of the self-check were each caught.

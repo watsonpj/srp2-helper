@@ -2,6 +2,7 @@
 <html lang="en">
 <head>
 <meta charset="UTF-8">
+<meta name="srp2-build" content="2026-10-13a">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>SRP2 — Session Ledger</title>
 <link rel="preconnect" href="https://fonts.googleapis.com">
@@ -584,7 +585,61 @@
 
 <footer>SRP2 SESSION LEDGER — RUNS ENTIRELY IN YOUR BROWSER — NO DATA LEAVES YOUR DEVICE</footer>
 
-<script src="data.js?v=18"></script>
-<script src="app.js?v=14"></script>
+<!-- srp2-build-check:start -->
+<div id="build-badge" style="position:fixed;right:8px;bottom:4px;z-index:40;font:10px/1.2 monospace;opacity:.55;pointer-events:none"></div>
+<script>
+  // Which release is this? Every page, script and data.js carries the same build id. This block (identical on every page) checks that they
+  // agree, and asks the server (bypassing every cache) whether a newer build has been deployed. It only ever shows a message: it never
+  // reloads by itself, because reloading clears whatever has been loaded into the page.
+  (function () {
+    var meta = document.querySelector('meta[name="srp2-build"]');
+    var PAGE = meta ? meta.getAttribute('content') : '?';
+    var badge = document.getElementById('build-badge');
+    function setBadge(extra) { if (badge) badge.textContent = 'build ' + PAGE + (extra ? ' \u00b7 ' + extra : ''); }
+    function bar(id, colour) {
+      var el = document.getElementById(id);
+      if (!el) {
+        el = document.createElement('div'); el.id = id;
+        el.style.cssText = 'position:sticky;top:0;z-index:50;padding:10px 16px;font:13px/1.5 monospace;color:#f1ecd9;background:' + colour[0] + ';border-bottom:2px solid ' + colour[1] + ';';
+        document.body.insertBefore(el, document.body.firstChild);
+      }
+      el.textContent = ''; return el;
+    }
+    function clearBar(id) { var el = document.getElementById(id); if (el) el.remove(); }
+    function checkFiles() {
+      var builds = window.SRP2_BUILDS || {}, bad = [];
+      Array.prototype.forEach.call(document.querySelectorAll('script[src]'), function (s) {
+        var m = /^(?:[^?#]*\/)?([^\/?#]+\.js)\?v=([^&#]+)/.exec(s.getAttribute('src')); if (!m) return;
+        var asked = decodeURIComponent(m[2]), got = builds[m[1]];
+        if (got !== asked) bad.push(m[1] + ': this page asked for build ' + asked + ', the file says ' + (got || 'nothing (not loaded, or it has no build stamp)'));
+      });
+      if (bad.length) bar('stale-files-banner', ['#5a352f', '#c1554a']).textContent = 'Mixed versions: ' + bad.join('; ') + '. Press Ctrl+F5 to reload without the cache. ' +
+        'If it keeps happening, the copy on the server is older (or newer) than this page: upload the file(s) again.';
+    }
+    function checkServer() {
+      if (!window.fetch) return;
+      fetch('version.json?t=' + Date.now(), { cache: 'no-store' })
+        .then(function (r) { if (!r.ok) throw new Error('HTTP ' + r.status); return r.json(); })
+        .then(function (v) {
+          if (v && v.build && v.build !== PAGE) {
+            var el = bar('update-banner', ['#4a4126', '#c9a227']), again = /[?&]r=/.test(location.search);
+            el.appendChild(document.createTextNode('A newer version is available (this page is build ' + PAGE + ', the server has ' + v.build + '). ' +
+              'Reloading clears anything loaded into this page (the character sheet, the log), so finish what you are doing first. ' +
+              (again ? 'You have already reloaded and the server is still giving this older page: the deployment may not have finished, or the files were published to a different branch. ' : '')));
+            var btn = document.createElement('button'); btn.type = 'button'; btn.textContent = 'Reload to update'; btn.style.cssText = 'margin-left:6px;cursor:pointer;';
+            btn.addEventListener('click', function () { location.href = location.pathname + '?r=' + encodeURIComponent(v.build); });
+            el.appendChild(btn); setBadge('NEWER BUILD ' + v.build + ' AVAILABLE');
+          } else { clearBar('update-banner'); setBadge('up to date'); }
+        })
+        .catch(function () { setBadge('update check unavailable (no version.json on the server?)'); });
+    }
+    setBadge('');
+    window.addEventListener('load', function () { checkFiles(); checkServer(); });
+    document.addEventListener('visibilitychange', function () { if (!document.hidden) checkServer(); });
+  })();
+</script>
+<!-- srp2-build-check:end -->
+<script src="data.js?v=2026-10-13a"></script>
+<script src="app.js?v=2026-10-13a"></script>
 </body>
 </html>
