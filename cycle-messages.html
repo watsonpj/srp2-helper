@@ -78,6 +78,7 @@
   .upload-list .btn{text-align:left;}
   .status-line{font-size:11px;color:var(--text-dim);font-family:'JetBrains Mono',monospace;margin-top:2px;}
   .status-line.error{color:var(--red);}
+  .card-warning{margin-bottom:8px;padding:6px 10px;font-size:12px;font-family:'JetBrains Mono',monospace;color:var(--red);border:1px solid var(--red);border-radius:6px;}
   #sheet-status{max-width:420px;}
   .empty-state{padding:28px 16px;text-align:center;color:var(--text-dim);font-size:13px;line-height:1.6;}
   .empty-state .big{font-family:'Space Grotesk',sans-serif;color:var(--text-muted);font-size:15px;display:block;margin-bottom:6px;}
@@ -138,6 +139,8 @@
         <input type="file" id="regions-upload" accept=".csv">
         <label class="btn file-label" for="poi-upload">Upload custom POI CSV</label>
         <input type="file" id="poi-upload" accept=".csv">
+        <label class="btn file-label" for="wincond-upload">Upload custom Win Conditions CSV</label>
+        <input type="file" id="wincond-upload" accept=".csv">
       </div>
 
       <div class="section-label">Location tile grids</div>
@@ -205,7 +208,7 @@
     });
   })();
 </script>
-<script src="data.js?v=17"></script>
-<script src="cycle-messages.js?v=8"></script>
+<script src="data.js?v=18"></script>
+<script src="cycle-messages.js?v=9"></script>
 </body>
 </html>

@@ -547,3 +547,23 @@ As a last safety net, `effectiveStat` and `effectiveMaxHP` add any not-yet-appli
 **Worth knowing.** Because removing +HP gear only caps Current HP, taking a Fairy Ring on and off repeatedly raises Current HP a point each time until it reaches the maximum. If you would rather a loss of Max HP also lower Current HP by the same amount, that is a small change to the rule.
 
 **Testing.** Scenario tests for loading, equipping, swapping, unequipping, Blind, forced statuses, hand-typed numbers, item breaks, weapon transforms, rebalanced Items sheets and hand-edited sheets; a randomized walk that makes hundreds of random changes through the real editors and checks every number against an independent model after every step; and a set of deliberately broken versions of the code to confirm the tests catch each kind of fault.
+
+## Update: cycle messages now show statuses, worn-item and POI actions, and the win condition
+
+**What a message contains, in this order:** the cycle, where you are (and the region line), your status conditions, the other people here, the enemies with their descriptions, the NPC / point of interest, bodies, messages left here, your actions, your inventory, and your win condition.
+
+**New this update**
+- **Status conditions.** Every status that is TRUE on the sheet (the `Status Blind`, `Status Zombie`... columns) is listed with its description from the Statuses sheet, in that sheet's order. An older sheet with a single `Status` column is still understood. A player with none gets no section.
+- **Worn items give actions.** A worn trinket's or armour's action is listed (a Spirit Bangle gives Cure). It used to ignore worn items other than the weapon. A weapon's attack is still only offered when there is something to fight.
+- **The point of interest's own action is listed** while you are at it (the Ball gives Touch).
+- **Each inventory item says which action it gives**, as well as the action appearing in the Actions list. An action available twice is listed once.
+- **The win condition comes last.** The sheet gets a `Win condition` column (any capitalisation) that names the condition; the message ends with `Your win condition: <name>` and its description. Matching ignores case and stray spaces.
+  - A blank cell prints nothing and puts a warning on the player's card. So does a name that is not in the list, and the warning names it. Warnings are never part of the text you copy.
+  - If the sheet has no such column yet, no win conditions are printed and the line under the upload button says so.
+- **Win Conditions data.** The list is baked into `data.js` as `DEFAULT_WIN_CONDITIONS` (so `data.js` is now `?v=18` on **both** pages) and can be replaced with the new "Upload custom Win Conditions CSV" button. Rows with no name, and the unnamed extra columns of the source file, are ignored. "Export updated data.js" includes it. An older cached `data.js` without it does not stop the page: win conditions are just absent until a list is uploaded.
+
+**Changed order.** Players are now listed before enemies, and the NPC / point of interest after the enemies, to match the agreed order. They used to be the other way round.
+
+**Where NPCs and points of interest come from.** There is no separate NPC data: a location's POI is read from the centre tile (D4) of its location grid, using that tile's decoration image name, so a location has at most one. This only works once the location grids are loaded (the "locations" folder upload), which is why a message made without them has no region or POI line.
+
+**Testing.** Scenario tests for each addition and the section order, a check that the new page says exactly what the old one did for a sheet with nothing new in it, and twelve deliberately broken versions of the code to confirm the tests catch each one.

@@ -39,6 +39,8 @@ const state = {
   bestiary: DEFAULT_BESTIARY,
   regions: DEFAULT_REGIONS,
   poi: DEFAULT_POI,
+  statuses: (typeof DEFAULT_STATUSES !== 'undefined' ? DEFAULT_STATUSES : []),
+  winConditions: (typeof DEFAULT_WIN_CONDITIONS !== 'undefined' ? DEFAULT_WIN_CONDITIONS : []),   // optional: an older data.js simply has none
   messages: JSON.parse(JSON.stringify(DEFAULT_MESSAGES)),   // { locCode: [text, ...] }
   locations: JSON.parse(JSON.stringify(DEFAULT_LOCATIONS)), // { locCode: [{tileLabel,tileType,tileImage,decorationBorderImage,decorationTileImage}, ...] }
 };
@@ -149,7 +151,9 @@ function loadSheetFile(file) {
       state.characters = objs;
       renderOutputEmpty();   // decides Ready / no players, and the button, from what was actually loaded
       const enemies = objs.filter(isEnemyRow).length;
-      setSheetStatus('Loaded ' + objs.length + ' rows (' + (objs.length - enemies) + ' players, ' + enemies + ' enemies) from ' + file.name, false);
+      const hasWinColumn = headers.some(h => h.trim().toLowerCase() === 'win condition');
+      setSheetStatus('Loaded ' + objs.length + ' rows (' + (objs.length - enemies) + ' players, ' + enemies + ' enemies) from ' + file.name +
+                     (hasWinColumn ? '' : '. There is no "Win condition" column yet, so win conditions are left out of the messages'), false);
     } catch (err) {
       rejectSheet(err.message);
     }
@@ -217,6 +221,11 @@ makeSimpleUploadHandler('bestiary-upload', o => ({
 makeSimpleUploadHandler('regions-upload', o => ({
   id: num(o.ID, 0), name: o.Name || '', description: o.Description || '',
 }), (rows) => { state.regions = rows; });
+
+// Win conditions: ID, Name, Description. Rows with no name (the WIP file has blank placeholder rows) and any unnamed extra columns are ignored.
+makeSimpleUploadHandler('wincond-upload', o => ({
+  id: num(o.ID, 0), name: (o.Name || '').trim(), description: (o.Description || '').trim(),
+}), (rows) => { state.winConditions = rows.filter(r => r.name); });
 
 makeSimpleUploadHandler('poi-upload', o => ({
   id: num(o.ID, 0), name: o.Name || '', description: o.Description || '', action: o.Action || '',
@@ -339,6 +348,7 @@ document.getElementById('export-data-btn').addEventListener('click', () => {
   lines.push(`const DEFAULT_STATUSES = ${JSON.stringify(typeof DEFAULT_STATUSES !== 'undefined' ? DEFAULT_STATUSES : [])};`);
   lines.push(`const DEFAULT_REGIONS = ${JSON.stringify(state.regions)};`);
   lines.push(`const DEFAULT_POI = ${JSON.stringify(state.poi)};`);
+  lines.push(`const DEFAULT_WIN_CONDITIONS = ${JSON.stringify(state.winConditions)};`);
   lines.push('');
   lines.push('// Messages: { locationCode: [messageText, ...] }.');
   lines.push(`const DEFAULT_MESSAGES = ${JSON.stringify(state.messages)};`);
@@ -372,19 +382,67 @@ function getGrantedAction(itemName) {
   return { name: actionName, description: actionRow ? actionRow.description : '' };
 }
 
-function buildCycleMessage(player) {
+// ---------- Status conditions and win conditions ----------
+function isTrueCell(v) { return ['true', '1', 'yes', 'y'].includes(String(v == null ? '' : v).trim().toLowerCase()); }
+
+// The statuses a character has right now, in the Statuses sheet's order. The character sheet has one TRUE/FALSE column per status
+// ("Status Blind"); an older sheet had a single "Status" column, which is still understood. "OK" means none.
+function getActiveStatuses(c) {
+  const known = state.statuses.filter(s => s.name && s.name.trim().toLowerCase() !== 'ok');
+  const keys = Object.keys(c);
+  const active = known.filter(s => {
+    const key = keys.find(k => k.trim().toLowerCase() === 'status ' + s.name.trim().toLowerCase());
+    return key && isTrueCell(c[key]);
+  });
+  const hasStatusColumns = keys.some(k => /^status\s+\S/i.test(k.trim()));
+  if (!hasStatusColumns && c['Status']) {
+    const one = known.find(s => s.name.trim().toLowerCase() === String(c['Status']).trim().toLowerCase());
+    if (one) active.push(one);
+  }
+  return active;
+}
+
+// The player's win condition, cited by name in the sheet's "Win condition" column. Anything wrong goes into `notes` (shown on the
+// player's card, never in the message text) and no win condition is printed, rather than printing a guess.
+function lookupWinCondition(player, notes) {
+  const key = Object.keys(player).find(k => k.trim().toLowerCase() === 'win condition');
+  if (!key) return null;   // the sheet has no such column yet; the status line under the upload says so once
+  const raw = String(player[key] || '').trim();
+  if (!raw) { notes.push('No win condition is set for this player, so none is printed.'); return null; }
+  const found = state.winConditions.find(w => w.name.trim().toLowerCase() === raw.toLowerCase());
+  if (!found) { notes.push('Win condition "' + raw + '" is not in the Win Conditions list, so none is printed.'); return null; }
+  return found;
+}
+
+function buildCycleMessage(player, notes) {
+  notes = notes || [];
   const loc = player['Current location'];
   const prevLoc = player['Previous location'];
   const cycle = player['Cycle'] || '?';
 
+  // Order follows the agreed end goal: cycle, where you are, your status, the other people, enemies, the NPC / point of interest,
+  // bodies, messages, actions, inventory, win condition.
   let msg = `It is [B]Cycle ${cycle}[/B].\n\n`;
   msg += loc === prevLoc ? `You are at [B]${loc}[/B].\n\n` : `You have arrived at [B]${loc}[/B].\n\n`;
 
   const region = getRegionForLocation(loc);
   if (region) msg += `${region.description}\n\n`;
 
-  const poi = getPOIForLocation(loc);
-  if (poi && poi.description) msg += `${poi.description}\n\n`;
+  // Status conditions, if any
+  const statuses = getActiveStatuses(player);
+  if (statuses.length) {
+    msg += 'Your status conditions:\n';
+    statuses.forEach(s => { msg += `  - [B]${s.name}[/B]` + (s.description ? `: ${s.description}` : '') + '\n'; });
+    msg += '\n';
+  }
+
+  // Other players present
+  const othersHere = state.characters.filter(c => c !== player && !isEnemyRow(c) && c['Current location'] === loc && !isKO(c));
+  if (othersHere.length) {
+    msg += 'There are other people here:\n';
+    othersHere.forEach(o => { msg += `  - ${o['Name']}\n`; });
+    msg += '\n';
+  }
 
   // Enemies present — grouped by Base Name, so multiple instances of the same
   // creature (two Thieves, say) get one combined line using the Bestiary's
@@ -413,13 +471,9 @@ function buildCycleMessage(player) {
     msg += '\n';
   }
 
-  // Other players present
-  const othersHere = state.characters.filter(c => c !== player && !isEnemyRow(c) && c['Current location'] === loc && !isKO(c));
-  if (othersHere.length) {
-    msg += 'There are other people here:\n';
-    othersHere.forEach(o => { msg += `  - ${o['Name']}\n`; });
-    msg += '\n';
-  }
+  // The NPC / point of interest at this location (one at most: it is read from the location grid's centre tile)
+  const poi = getPOIForLocation(loc);
+  if (poi && poi.description) msg += `${poi.description}\n\n`;
 
   // Corpses — derived live from Status=KO at this location (players and enemies alike),
   // never a separately maintained list, so it can't drift out of sync with combat results.
@@ -449,26 +503,29 @@ function buildCycleMessage(player) {
     msg += '[/TABLE]\n\n';
   }
 
-  // Actions: weapon-granted action only shown if there's actually something to fight;
-  // inventory-granted actions always shown. Matches generateMessages.py's own logic.
+  // Actions: what the player's equipment gives them, then what the setting gives them, then what their inventory gives them.
+  // A weapon's attack is only offered if there is something to fight (matches generateMessages.py's own logic); a worn
+  // trinket's or armour's action is always offered; the point of interest's action is offered while you are at it.
   msg += '[B]Actions[/B]\n';
   const seen = new Set();
-  if (enemiesHere.length) {
-    const weaponAction = getGrantedAction(player['Equipped weapon']);
-    if (weaponAction && !seen.has(weaponAction.name)) {
-      seen.add(weaponAction.name);
-      msg += `[${weaponAction.name}]` + (weaponAction.description ? ` - ${weaponAction.description}` : '') + '\n';
-    }
-  }
+  const addAction = (name, description) => {
+    if (!name || seen.has(name)) return;
+    seen.add(name);
+    msg += `[${name}]` + (description ? ` - ${description}` : '') + '\n';
+  };
+  const weaponAction = getGrantedAction(player['Equipped weapon']);
+  if (weaponAction && enemiesHere.length) addAction(weaponAction.name, weaponAction.description);
+  ['Equipped armour', 'Equipped trinket'].forEach(slot => {
+    const worn = getGrantedAction(player[slot]);
+    if (worn) addAction(worn.name, worn.description);
+  });
+  if (poi && poi.action && poi.action.trim()) addAction(poi.action.trim(), poi.actionDescription);
   for (let i = 1; i <= 6; i++) {
     const invAction = getGrantedAction(player[`Inventory slot ${i}`]);
-    if (invAction && !seen.has(invAction.name)) {
-      seen.add(invAction.name);
-      msg += `[${invAction.name}]` + (invAction.description ? ` - ${invAction.description}` : '') + '\n';
-    }
+    if (invAction) addAction(invAction.name, invAction.description);
   }
 
-  // Inventory
+  // Inventory, with the action each item gives
   msg += '\n[spoiler=Inventory]';
   const invItems = [];
   for (let i = 1; i <= 6; i++) {
@@ -482,6 +539,8 @@ function buildCycleMessage(player) {
         msg += `\n    [B]${item.name}[/B] [SIZE=3](${item.type})[/SIZE]\n`;
         msg += `    [SIZE=3]${item.effect}[/SIZE]\n`;
         msg += `    [SIZE=3][I]${item.description}[/I][/SIZE]\n`;
+        const granted = getGrantedAction(item.name);
+        if (granted) msg += `    [SIZE=3]Gives the action [${granted.name}][/SIZE]\n`;
       } else {
         msg += `\n  - Unknown item (${name})\n`;
       }
@@ -490,6 +549,10 @@ function buildCycleMessage(player) {
     msg += '\n  None\n';
   }
   msg += '[/spoiler]';
+
+  // The player's win condition, last
+  const win = lookupWinCondition(player, notes);
+  if (win) msg += `\n\n[B]Your win condition: ${win.name}[/B]\n${win.description}`;
 
   return msg;
 }
@@ -522,7 +585,8 @@ document.getElementById('generate-btn').addEventListener('click', () => {
   }
   body.innerHTML = '';
   players.forEach(player => {
-    const text = buildCycleMessage(player);
+    const notes = [];
+    const text = buildCycleMessage(player, notes);
     const card = document.createElement('div');
     card.className = 'player-card';
     card.innerHTML = `
@@ -538,6 +602,13 @@ document.getElementById('generate-btn').addEventListener('click', () => {
       </div>
     `;
     card.querySelector('.msg-preview').textContent = text;
+    if (notes.length) {   // things to fix in the sheet; deliberately NOT part of the text that gets copied
+      const warn = document.createElement('div');
+      warn.className = 'card-warning';
+      warn.textContent = notes.join(' ');
+      const bodyEl = card.querySelector('.player-card-body');
+      bodyEl.insertBefore(warn, bodyEl.firstChild);
+    }
     card.querySelector('.copy-btn').addEventListener('click', (ev) => {
       const btn = ev.currentTarget;
       copyText(text);

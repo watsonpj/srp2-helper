@@ -15,3 +15,7 @@ const DEFAULT_MESSAGES = {"A1": ["this is a test message", "test message"], "A4"
 // Location tile grids: { locationCode: [{tileLabel, tileType, tileImage, decorationBorderImage, decorationTileImage}, ...] }
 // Populated by uploading the same "locations" folder Aseprite already reads — empty until then.
 const DEFAULT_LOCATIONS = {};
+
+// Win conditions: [{id, name, description}]. A player cites one by name in the character sheet's "Win condition" column.
+// (Blank placeholder rows and the unnamed extra columns of the source CSV are not included.)
+const DEFAULT_WIN_CONDITIONS = [{"id": 0, "name": "Default", "description": "Hold personally or in your party four Pieces of Victory."}, {"id": 1, "name": "Last Man Standing", "description": "Be the last player alive."}, {"id": 2, "name": "Undead Horde", "description": "Every player in the game has either the Zombie or Vampire status."}, {"id": 3, "name": "Cursed Weapon", "description": "Possess a fully-powered Muramasa."}, {"id": 4, "name": "Cultist", "description": "Sacrifice n players at the Old Altar."}];
