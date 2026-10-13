@@ -77,6 +77,8 @@
   .upload-list{display:flex;flex-direction:column;gap:6px;}
   .upload-list .btn{text-align:left;}
   .status-line{font-size:11px;color:var(--text-dim);font-family:'JetBrains Mono',monospace;margin-top:2px;}
+  .status-line.error{color:var(--red);}
+  #sheet-status{max-width:420px;}
   .empty-state{padding:28px 16px;text-align:center;color:var(--text-dim);font-size:13px;line-height:1.6;}
   .empty-state .big{font-family:'Space Grotesk',sans-serif;color:var(--text-muted);font-size:15px;display:block;margin-bottom:6px;}
 
@@ -115,6 +117,7 @@
     <a class="nav-link" href="index.html">&larr; Combat Helper</a>
     <label class="btn file-label" for="sheet-upload">Upload character sheet CSV</label>
     <input type="file" id="sheet-upload" accept=".csv">
+    <span class="status-line" id="sheet-status"></span>
   </div>
 </header>
 
@@ -172,7 +175,37 @@
 
 <footer>SRP2 CYCLE MESSAGES — RUNS ENTIRELY IN YOUR BROWSER — NO DATA LEAVES YOUR DEVICE</footer>
 
-<script src="data.js?v=14"></script>
-<script src="cycle-messages.js?v=6"></script>
+<script>
+  // Written into the page itself so it still works if data.js or cycle-messages.js fail to load or crash: a page that quietly does
+  // nothing is the worst outcome, so any uncaught error, and a page script that never ran, are shown here instead.
+  (function () {
+    function showProblem(text) {
+      var bar = document.getElementById('problem-banner');
+      if (!bar) {
+        bar = document.createElement('div'); bar.id = 'problem-banner';
+        bar.style.cssText = 'position:sticky;top:0;z-index:50;padding:10px 16px;background:#5a352f;color:#f1d9d5;border-bottom:2px solid #c1554a;font:13px/1.5 monospace;';
+        document.body.insertBefore(bar, document.body.firstChild);
+      }
+      bar.textContent = text;
+    }
+    window.__showProblem = showProblem;
+    window.addEventListener('error', function (e) {
+      showProblem('Something stopped this page working: ' + (e.message || 'an unknown error') +
+                  '. Press Ctrl+F5 to reload without the browser cache. If it keeps happening, open the console (F12) and copy the red text.');
+    });
+    window.addEventListener('load', function () {
+      // (a script that crashed part-way leaves "state" un-initialised, and even typeof then throws, hence the try)
+      var ran = true;
+      try { ran = typeof state !== 'undefined'; } catch (e) { ran = false; }
+      // Only say the generic thing if nothing more specific has already been said: a crash puts its own message in the banner.
+      if (!ran && !document.getElementById('problem-banner')) {
+        showProblem('The page script (cycle-messages.js) did not run, so nothing on this page will work. Press Ctrl+F5 to reload without the cache, ' +
+                    'and check that data.js and cycle-messages.js are both uploaded next to this file.');
+      }
+    });
+  })();
+</script>
+<script src="data.js?v=17"></script>
+<script src="cycle-messages.js?v=7"></script>
 </body>
 </html>
