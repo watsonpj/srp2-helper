@@ -1,4 +1,4 @@
-window.SRP2_BUILDS = window.SRP2_BUILDS || {}; window.SRP2_BUILDS['cycle-messages.js'] = '2026-10-13c'; // srp2-build-stamp
+window.SRP2_BUILDS = window.SRP2_BUILDS || {}; window.SRP2_BUILDS['cycle-messages.js'] = '2026-10-14a'; // srp2-build-stamp
 /* ============================================================
    SRP2 Cycle Messages — generates the pre-cycle status message
    each player would receive, in BBCode, ready to paste.
@@ -384,7 +384,7 @@ function getGrantedAction(itemName) {
   if (!item || !item.action || item.action.trim() === '-') return null;
   const actionName = item.action.trim();
   const actionRow = state.actions.find(a => a.name.trim().toLowerCase() === actionName.toLowerCase());
-  return { name: actionName, description: actionRow ? actionRow.description : '', roll: formatRoll(actionRow) };
+  return { name: actionName, description: actionRow ? actionRow.description : '', roll: formatRoll(actionRow), row: actionRow || null, item: item };
 }
 
 // ---------- Dice rolls ----------
@@ -414,18 +414,52 @@ function findActionRow(name) {
   return same.find(a => /\bnpc\b/i.test(a.notes || '')) || same[0] || null;
 }
 
+// ---------- Equipment ----------
+// Weapons, armour and trinkets only give their actions while they are EQUIPPED. Everything else (consumables, the miscellaneous items such
+// as the Stone Crown) is not tied to a slot, so it gives its action straight from the inventory.
+function isEquipmentItem(item) { return !!item && ['weapon', 'armour', 'trinket'].includes(String(item.type || '').trim().toLowerCase()); }
+
+// ---------- The map, and moving ----------
+// The world map is columns A-H by rows 1-8 and does not wrap, so a player on an edge or corner has fewer than four ways to go. Direction names
+// follow the picture script: a letter going up (A to B) is SE, down (B to A) is NW; a number going up (1 to 2) is SW, down (2 to 1) is NE.
+// Returns null for a location that is not on the map, rather than guessing.
+const MAP_LETTERS = 'ABCDEFGH', MAP_ROWS = 8;
+function getMoveDirections(location) {
+  const m = /^([A-H])([1-8])$/i.exec(String(location == null ? '' : location).trim());
+  if (!m) return null;
+  const letter = MAP_LETTERS.indexOf(m[1].toUpperCase()) + 1, number = Number(m[2]);
+  const directions = [];
+  if (letter > 1) directions.push('NW');
+  if (number > 1) directions.push('NE');
+  if (number < MAP_ROWS) directions.push('SW');
+  if (letter < MAP_LETTERS.length) directions.push('SE');
+  return directions;
+}
+const MOVE_TEXT = 'Move - travel to a new location.';
+const FLEE_TEXT = 'Flee - travel to a new location at the end of the turn.';
+
 // ---------- Choosing a target ----------
 // An action takes a target when its description speaks of one. The Actions sheet is written that way: every attack, Heal, Cure, Sacrifice,
 // Echo, Inspect, Pickpocket and Impersonate say "target"; Rest, Talk, Shop, Revive, the consumables and the area attacks (which hit
 // everyone) do not. The wording is therefore the switch: a new action only gets the prompt if its description says "target".
 function actionNeedsTarget(description) { return /\btargets?\b/i.test(description || ''); }
 
-// Everyone who can be picked: every player and enemy at the player's location who is still standing, the player included (players
-// attack or heal whoever they see fit, themselves too). Players first, then enemies, each in sheet order. It uses the sheet Name, which is
-// unique ("Wolf", "Wolf (2)"), so a reply names exactly one entity.
-function getTargetNames(player) {
+// An attack is any action of a Damage type. You are not a target of your own attack, with one exception: an action whose damage roll can go
+// below zero can heal as well as hurt (Cursed Magick), so aiming it at yourself is a real choice. Heals, status clears and the miscellaneous
+// actions that take a target (Inspect, Echo...) may be aimed at yourself.
+function isAttackRow(row) { return !!row && /^damage/i.test(String(row.type || '').trim()); }
+function canHealRow(row) {
+  const raw = String(row && row.rollMin != null ? row.rollMin : '').trim();
+  return raw !== '' && Number.isFinite(Number(raw)) && Number(raw) < 0;
+}
+
+// Everyone who can be picked for an action: every player and enemy at the player's location who is still standing, players first and then
+// enemies, each in sheet order (the player is left out of their own attacks; see above). It uses the sheet Name, which is unique
+// ("Wolf", "Wolf (2)"), so a reply names exactly one entity. `row` is the action's Actions-sheet row, if it has one.
+function getTargetNames(player, row) {
   const here = state.characters.filter(c => c['Current location'] === player['Current location'] && !isKO(c));
-  return here.filter(c => !isEnemyRow(c)).concat(here.filter(isEnemyRow)).map(c => c['Name']);
+  const pool = (!isAttackRow(row) || canHealRow(row)) ? here : here.filter(c => c !== player);
+  return pool.filter(c => !isEnemyRow(c)).concat(pool.filter(isEnemyRow)).map(c => c['Name']);
 }
 
 // The wording to show for a point of interest's action. A point of interest may carry its own; if it does not, the Actions sheet's wording
@@ -558,29 +592,41 @@ function buildCycleMessage(player, notes) {
     msg += '[/TABLE]\n\n';
   }
 
-  // Actions: what the player's equipment gives them, then what the setting gives them, then what their inventory gives them.
-  // A weapon's attack is only offered if there is something to fight (matches generateMessages.py's own logic); a worn
-  // trinket's or armour's action is always offered; the point of interest's action is offered while you are at it.
+  // Actions, in this order: what the player has EQUIPPED, what the setting gives them (a point of interest), what their inventory gives them
+  // (only items that are not equipment: a weapon or trinket in the bag gives nothing until it is equipped), then the standard actions.
+  // A weapon's attack is only offered if there is something to fight (matches generateMessages.py's own logic); a worn trinket's or
+  // armour's action is always offered.
   msg += '[B]Actions[/B]\n';
   const seen = new Set();
-  const targets = getTargetNames(player);
-  const addAction = (name, description, roll) => {
+  const addAction = (name, description, roll, row) => {
     if (!name || seen.has(name)) return;
+    const targets = getTargetNames(player, row);
+    if (isAttackRow(row) && !targets.length) return;   // an attack with nobody to hit is not offered (alone, you cannot attack yourself)
     seen.add(name);
     msg += `[${name}]` + (description ? ` - ${description}` : '') + (roll ? ` ${roll}` : '') + '\n';
-    // An action that takes a target is followed by the choice to make, naming everyone present (not just enemies or just friends)
+    // An action that takes a target is followed by the choice to make, naming everyone who can be picked
     if (targets.length && actionNeedsTarget(description)) msg += `[I]Select a target: ${targets.join(', ')}[/I]\n`;
   };
   const weaponAction = getGrantedAction(player['Equipped weapon']);
-  if (weaponAction && enemiesHere.length) addAction(weaponAction.name, weaponAction.description, weaponAction.roll);
+  if (weaponAction && enemiesHere.length) addAction(weaponAction.name, weaponAction.description, weaponAction.roll, weaponAction.row);
   ['Equipped armour', 'Equipped trinket'].forEach(slot => {
     const worn = getGrantedAction(player[slot]);
-    if (worn) addAction(worn.name, worn.description, worn.roll);
+    if (worn) addAction(worn.name, worn.description, worn.roll, worn.row);
   });
-  if (poi && poi.action && poi.action.trim()) addAction(poi.action.trim(), describePoiAction(poi.action, poi.actionDescription), formatRoll(findActionRow(poi.action)));
+  if (poi && poi.action && poi.action.trim()) { const poiRow = findActionRow(poi.action); addAction(poi.action.trim(), describePoiAction(poi.action, poi.actionDescription), formatRoll(poiRow), poiRow); }
   for (let i = 1; i <= 6; i++) {
     const invAction = getGrantedAction(player[`Inventory slot ${i}`]);
-    if (invAction) addAction(invAction.name, invAction.description, invAction.roll);
+    if (invAction && !isEquipmentItem(invAction.item)) addAction(invAction.name, invAction.description, invAction.roll, invAction.row);
+  }
+  // The standard actions. With nothing to fight everyone has Manage Inventory, Rest, Post and Move; with enemies here there is only Flee,
+  // which happens at the end of the turn. Directions are only those that exist from where the player stands. A defeated player has none.
+  if (!isKO(player)) {
+    if (!enemiesHere.length) {
+      ['Manage Inventory', 'Rest', 'Post'].forEach(standard => { const row = findActionRow(standard); addAction(standard, row ? row.description : '', formatRoll(row), row); });
+    }
+    const directions = getMoveDirections(loc);
+    if (directions) msg += `[I]${enemiesHere.length ? FLEE_TEXT : MOVE_TEXT} (Select a direction: ${directions.join(', ')})[/I]\n`;
+    else notes.push('Location "' + loc + '" is not on the A1-H8 map, so no Move or Flee directions are given.');
   }
 
   // Inventory, with the action each item gives
@@ -598,7 +644,7 @@ function buildCycleMessage(player, notes) {
         msg += `    [SIZE=3]${item.effect}[/SIZE]\n`;
         msg += `    [SIZE=3][I]${item.description}[/I][/SIZE]\n`;
         const granted = getGrantedAction(item.name);
-        if (granted) msg += `    [SIZE=3]Gives the action [${granted.name}]` + (granted.description ? ` - ${granted.description}` : '') + (granted.roll ? ` ${granted.roll}` : '') + `[/SIZE]\n`;
+        if (granted) msg += `    [SIZE=3]Gives the action [${granted.name}]` + (isEquipmentItem(item) ? ' when equipped' : '') + (granted.description ? ` - ${granted.description}` : '') + (granted.roll ? ` ${granted.roll}` : '') + `[/SIZE]\n`;
       } else {
         msg += `\n  - Unknown item (${name})\n`;
       }

@@ -634,3 +634,18 @@ That is two rolls, each between 2 and 4. The roll comes before the target prompt
 43 of the 83 actions print a roll. These choices are all in one function, `formatRoll`, near the top of `cycle-messages.js`, if you want any of them changed.
 
 **Testing.** The roll text for all 83 actions, and the whole Actions block and item lines of real messages (your sheet, a spread of weapons, worn and carried items, each point of interest), are compared against an independent Python implementation of the rules, worked out from the CSVs alone. Fifteen deliberately broken versions were each caught; one of them first exposed a gap in the tests (no worn item with a roll), which is now covered.
+
+## Update: equipped gear, attacks and yourself, the standard actions, and moving
+
+**Only equipped gear gives actions.** A weapon, trinket or armour in the inventory gives nothing until it is equipped. Items that are not tied to a slot (consumables, and the miscellaneous items such as the Stone Crown) give their action straight from the inventory. In the inventory itself, a carried weapon or trinket still shows what it would give, now worded "Gives the action [Heal] when equipped - ...".
+
+**You are not a target of your own attacks.** An attack is any action of a Damage type (including the area attacks). Its target list is every *other* player and enemy at the location (attacking allies is allowed), and an attack with nobody else there is not printed at all. The exceptions, where you may pick yourself, are heals, status clears, the miscellaneous actions that take a target (Inspect, Echo, Sacrifice, Pickpocket, Impersonate), and any damage action whose roll can go below zero, because it can heal (that is how Cursed Magick is recognised: its roll is -2 to 2). The rule is read from the Actions sheet's `Type` and `Roll Min`, not from action names. A weapon's attack is still only offered when there are enemies present (see the question at the end of the summary: this has not changed).
+
+**The standard actions.** With no enemies at the location, every living player is given, after their other actions: Manage Inventory, Rest and Post (from the Actions sheet, so Rest shows its roll), then Move. With enemies present there is only Flee. A defeated player is given none of them.
+
+    [I]Move - travel to a new location. (Select a direction: NW, NE, SW, SE)[/I]
+    [I]Flee - travel to a new location at the end of the turn. (Select a direction: SW, SE)[/I]
+
+**Directions come from the map.** The world map is columns A-H by rows 1-8 and does not wrap, so only directions that exist from the player's location are offered: a corner offers two (A1: SW, SE), an edge three, anywhere inside four. Directions follow the picture script: a letter going up (A to B) is SE, down (B to A) NW; a number going up (1 to 2) is SW, down (2 to 1) NE. They are always listed in the order NW, NE, SW, SE. A location that is not on the map (for example a typo such as `Z9`) gets no Move or Flee line, and the player's card shows a warning saying so. Move and Flee are not in the Actions sheet: their wording is in `cycle-messages.js` (`MOVE_TEXT`, `FLEE_TEXT`).
+
+**Testing.** The Actions block of every player is compared with an independent Python implementation of all these rules (`cm_tests/oracle.py`), worked out from the CSVs alone; the map is checked for all 64 locations by coordinate arithmetic, including that every offered move lands on the map and can be undone. The "attack with nobody to hit" rule has no real item that can reach it, so it is tested by changing an action inside the page. Twenty deliberately broken versions, one per rule, were each caught.
