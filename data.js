@@ -1,4 +1,4 @@
-window.SRP2_BUILDS = window.SRP2_BUILDS || {}; window.SRP2_BUILDS['data.js'] = '2026-10-14d'; // srp2-build-stamp
+window.SRP2_BUILDS = window.SRP2_BUILDS || {}; window.SRP2_BUILDS['data.js'] = '2026-10-14e'; // srp2-build-stamp
 // Shared static reference data for SRP2 tools (combat helper + cycle messages).
 // Regenerate by re-running the CSV embed step whenever the source sheets change.
 

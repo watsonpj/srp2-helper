@@ -692,3 +692,30 @@ These four `Trigger` kinds are now applied, so the previous update's note that t
 **Where figures stand in the pictures (`createCycleImagesCompact.lua`).** Every figure was drawn with its top-left corner on its tile's point. Those points are where a 32 x 44 player's top-left goes (your old slot table wrote each as "feet point - (16, 44)"), so players were right, but a sprite of any other size landed off its tile by the difference. Now every figure that stands on a tile (players, enemies, corpses, the centre tile's entity) is placed by its feet: the bottom-centre of its image goes where a player's feet go, the tile's point + (16, 44). A 32 x 44 player is drawn exactly where it was (against the previous script every character is within a pixel or two), and a sprite of any size stands on the same spot. This assumes the art's feet are at the bottom-centre of its canvas. If some art is not, `standingNudge` near the top of the placement code has a `{x, y}` for each kind (Player, Enemy, Centre, Corpse), in pixels. `slotOffsetX/Y` still moves everything together. The blue diagnostic marker is the feet point.
 
 **Testing.** The picture script's new test gives players, each enemy, the corpse and the centre entity different sizes (including odd widths) and checks every drawn corner against the layout points; the older comparisons with your previous and original scripts now use the real 32 x 44 sprite size, where they agree to within a pixel or two. My earlier tests used one size for everything, which is why they could not see this. Thirteen deliberately broken versions of the placement were each caught. The message layout has its own suite (the wording, the tags, the order, all eight regions against your CSV, the notice, and a check that every action line has the same shape); fifteen deliberately broken versions were each caught.
+
+## Update: what a corpse leaves behind, and Loot
+
+**The corpse list** now reads `There are corpses here:` (it used to say "You see some bodies here:"), with one line per defeated player or enemy at the location, enemies by their Base Name as before.
+
+**Their belongings, in one spoiler.** Straight after the list there is a single `[spoiler=Corpses]` holding what every defeated *player* had, from the character sheet, so that nobody has to Inspect them: the items they wore (weapon, armour, trinket), the items they carried (inventory slots 1 to 6), and their Likes, in the same order as the list, a blank line between players:
+
+    [spoiler=Corpses]
+    [B]phoopes[/B]
+    Equipped:
+        [B]Honed Sword[/B] [SIZE=3](Weapon)[/SIZE]
+        ...
+    Inventory:
+      None
+    Likes: 7
+
+    [B]hell man[/B]
+    ...
+    [/spoiler]
+
+- Items look exactly as they do in a living player's own Inventory spoiler (name and type, effect, description, and the action each gives with its wording and roll); both use the same code. Worn equipment does not say "when equipped"; carried equipment does.
+- An empty group reads `None`. An item not in the Items sheet reads `Unknown item (name)`. A blank Likes cell reads `Likes: 0`, and a sheet with no Likes column simply has no Likes line.
+- Enemy corpses are listed but have no entry: enemy rows have nothing on the sheet to show. With only enemy corpses there is no spoiler.
+
+**Loot.** When a corpse is at the location and nobody else is alive there (no other player, no enemy), the player is offered `[Loot] - Take items of your choosing from a corpse.`, after Post and before Return and Move. Loot is not in the Actions sheet, so its wording is in `cycle-messages.js` (`LOOT_DESCRIPTION`), as with Move and Flee. Defeated bystanders do not count as someone alive, and any corpse counts, an enemy's included. A defeated player is not offered it. Where a point of interest already offers Loot (the Corpse and Chest ones, with their own wording), that one is listed and there is never a second.
+
+**Testing.** The whole corpse section is compared with text worked out from the CSVs alone (an independent item layout, the list, the spoiler, Likes), across one and two defeated players, a player and an enemy, enemies only, nothing at all, items that are not in the sheet, and a sheet with no Likes column. Loot is checked with another player alive, an enemy alive, everyone else defeated, a defeated enemy, a defeated viewer, and a point of interest that offers its own Loot. Sixteen deliberately broken versions were each caught.

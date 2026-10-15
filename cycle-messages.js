@@ -1,4 +1,4 @@
-window.SRP2_BUILDS = window.SRP2_BUILDS || {}; window.SRP2_BUILDS['cycle-messages.js'] = '2026-10-14d'; // srp2-build-stamp
+window.SRP2_BUILDS = window.SRP2_BUILDS || {}; window.SRP2_BUILDS['cycle-messages.js'] = '2026-10-14e'; // srp2-build-stamp
 /* ============================================================
    SRP2 Cycle Messages — generates the pre-cycle status message
    each player would receive, in BBCode, ready to paste.
@@ -474,6 +474,33 @@ function getBookmark(c) {
   return (v && v !== '-1') ? v : '';
 }
 
+// ---------- Items, as shown to a player ----------
+// An item as three or four lines: its name and type, its effect, its description, and the action it gives (with that action's description
+// and roll). Equipment that is merely carried says "when equipped"; equipment that is worn does not. Used for the player's own inventory
+// and for everything a corpse had on it, so the two always look the same.
+function isRealItemName(raw) { return !!raw && String(raw).trim() !== '' && String(raw).trim().toLowerCase() !== 'none'; }
+function renderItem(name, worn) {
+  const item = findItem(name);
+  if (!item) return `  - Unknown item (${name})\n`;
+  let t = `    [B]${item.name}[/B] [SIZE=3](${item.type})[/SIZE]\n    [SIZE=3]${item.effect}[/SIZE]\n    [SIZE=3][I]${item.description}[/I][/SIZE]\n`;
+  const granted = getGrantedAction(item.name);
+  if (granted) t += `    [SIZE=3]Gives the action [${granted.name}]` + (isEquipmentItem(item) && !worn ? ' when equipped' : '') + (granted.description ? ` - ${granted.description}` : '') + (granted.roll ? ` ${granted.roll}` : '') + `[/SIZE]\n`;
+  return t;
+}
+
+// What a defeated player had: the items they wore, the items they carried, and their Likes, from the character sheet. It is shown in a
+// spoiler so that it spares players an Inspect without making every message long.
+function describeCorpse(c) {
+  const worn = ['Equipped weapon', 'Equipped armour', 'Equipped trinket'].map(k => c[k]).filter(isRealItemName).map(n => String(n).trim());
+  const carried = [1, 2, 3, 4, 5, 6].map(i => c[`Inventory slot ${i}`]).filter(isRealItemName).map(n => String(n).trim());
+  let t = `[B]${c['Name']}[/B]\nEquipped:\n` + (worn.length ? worn.map(n => renderItem(n, true)).join('\n') : '  None\n');
+  t += 'Inventory:\n' + (carried.length ? carried.map(n => renderItem(n, false)).join('\n') : '  None\n');
+  const likesKey = Object.keys(c).find(k => k.trim().toLowerCase() === 'likes');
+  if (likesKey) t += `Likes: ${String(c[likesKey]).trim() || '0'}\n`;
+  return t;
+}
+const LOOT_DESCRIPTION = 'Take items of your choosing from a corpse.';
+
 // ---------- Choosing a target ----------
 // An action takes a target when its description speaks of one. The Actions sheet is written that way: every attack, Heal, Cure, Sacrifice,
 // Echo, Inspect, Pickpocket and Impersonate say "target"; Rest, Talk, Shop, Revive, the consumables and the area attacks (which hit
@@ -606,7 +633,7 @@ function buildCycleMessage(player, notes) {
   // never a separately maintained list, so it can't drift out of sync with combat results.
   const corpsesHere = state.characters.filter(c => c !== player && c['Current location'] === loc && isKO(c));
   if (corpsesHere.length) {
-    msg += 'You see some bodies here:\n';
+    msg += 'There are corpses here:\n';
     corpsesHere.forEach(c => {
       // Same Base Name preference as the "enemies present" listing above — a
       // defeated enemy's corpse shouldn't show its internal disambiguation
@@ -615,6 +642,9 @@ function buildCycleMessage(player, notes) {
       msg += `  - ${label}\n`;
     });
     msg += '\n';
+    // One spoiler for all the defeated players' belongings, in the same order as the list (enemies have nothing on the sheet to show)
+    const playerCorpses = corpsesHere.filter(c => !isEnemyRow(c));
+    if (playerCorpses.length) msg += '[spoiler=Corpses]\n' + playerCorpses.map(describeCorpse).join('\n') + '[/spoiler]\n\n';
   }
 
   // Messages left at this tile
@@ -669,6 +699,10 @@ function buildCycleMessage(player, notes) {
   if (!isKO(player)) {
     if (!enemiesHere.length) {
       ['Manage Inventory', 'Rest', 'Post'].forEach(standard => { const row = findActionRow(standard); addAction(standard, row ? row.description : '', formatRoll(row), row); });
+      // Loot needs a corpse here and nobody else alive (no other player, no enemy), so there is nothing to stop you taking your time.
+      // It is not in the Actions sheet, so its wording is here; a point of interest that offers Loot already is listed instead of it.
+      const someoneElseAlive = state.characters.some(c => c !== player && c['Current location'] === loc && !isKO(c));
+      if (corpsesHere.length && !someoneElseAlive) addAction('Loot', LOOT_DESCRIPTION, '', null);
     }
     const bookmark = getBookmark(player);
     if (bookmark) {   // a marked location to go back to, so Return is available (peace or combat)
@@ -688,18 +722,7 @@ function buildCycleMessage(player, notes) {
     if (raw && raw.trim() && raw.trim().toLowerCase() !== 'none') invItems.push(raw.trim());
   }
   if (invItems.length) {
-    invItems.forEach(name => {
-      const item = findItem(name);
-      if (item) {
-        msg += `\n    [B]${item.name}[/B] [SIZE=3](${item.type})[/SIZE]\n`;
-        msg += `    [SIZE=3]${item.effect}[/SIZE]\n`;
-        msg += `    [SIZE=3][I]${item.description}[/I][/SIZE]\n`;
-        const granted = getGrantedAction(item.name);
-        if (granted) msg += `    [SIZE=3]Gives the action [${granted.name}]` + (isEquipmentItem(item) ? ' when equipped' : '') + (granted.description ? ` - ${granted.description}` : '') + (granted.roll ? ` ${granted.roll}` : '') + `[/SIZE]\n`;
-      } else {
-        msg += `\n  - Unknown item (${name})\n`;
-      }
-    });
+    invItems.forEach(name => { msg += '\n' + renderItem(name, false); });
   } else {
     msg += '\n  None\n';
   }
