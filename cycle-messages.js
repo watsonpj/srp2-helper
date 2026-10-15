@@ -1,4 +1,4 @@
-window.SRP2_BUILDS = window.SRP2_BUILDS || {}; window.SRP2_BUILDS['cycle-messages.js'] = '2026-10-14a'; // srp2-build-stamp
+window.SRP2_BUILDS = window.SRP2_BUILDS || {}; window.SRP2_BUILDS['cycle-messages.js'] = '2026-10-14d'; // srp2-build-stamp
 /* ============================================================
    SRP2 Cycle Messages — generates the pre-cycle status message
    each player would receive, in BBCode, ready to paste.
@@ -435,8 +435,44 @@ function getMoveDirections(location) {
   if (letter < MAP_LETTERS.length) directions.push('SE');
   return directions;
 }
-const MOVE_TEXT = 'Move - travel to a new location.';
-const FLEE_TEXT = 'Flee - travel to a new location at the end of the turn.';
+const MOVE_DESCRIPTION = 'Travel to a new location.';
+const FLEE_DESCRIPTION = 'Travel to a new location at the end of the turn.';
+
+// ---------- When an action is worth offering: its Trigger ----------
+// The Actions sheet's Trigger column says what an action is aimed at (the combat helper shows it as "Target:"), so it also says when the
+// action is worth offering. A list such as "Enemy, Player" is met by any of its kinds; blank means always.
+//   Enemy     a living enemy at the location          Player    another living player (never the viewer, never a defeated one)
+//   Death     the viewer is defeated (Revive)          POI       a point of interest at the location (the Place actions)
+//   Merchant  a point of interest that offers Shop     Soil      a point of interest whose name says soil (Loamy Soil: Plant)
+// A kind this code does not know is treated as met, so an action is never hidden for a reason that cannot be checked.
+// Points of interest come from the location grids (the "locations" folder upload), so without them POI, Merchant and Soil are never met.
+const TRIGGER_KINDS = ['enemy', 'player', 'death', 'poi', 'merchant', 'soil'];
+function getTriggerKinds(row) { return String(row && row.trigger != null ? row.trigger : '').split(',').map(k => k.trim().toLowerCase()).filter(Boolean); }
+function actionTriggerMet(row, player, poi) {
+  const kinds = getTriggerKinds(row);
+  if (!kinds.length) return true;
+  if (kinds.some(k => !TRIGGER_KINDS.includes(k))) return true;
+  const others = state.characters.filter(c => c !== player && c['Current location'] === player['Current location'] && !isKO(c));
+  const met = {
+    enemy: others.some(isEnemyRow),
+    player: others.some(c => !isEnemyRow(c)),
+    death: isKO(player),
+    poi: !!poi,
+    merchant: !!poi && String(poi.action || '').trim().toLowerCase() === 'shop',
+    soil: !!poi && /\bsoil\b/i.test(String(poi.name || '')),
+  };
+  return kinds.some(k => met[k]);
+}
+// True for an action that can only be offered where there is a point of interest, which cannot be known until location grids are loaded.
+function triggerNeedsPlace(row) { return getTriggerKinds(row).some(k => k === 'poi' || k === 'merchant' || k === 'soil'); }
+
+// A character has a bookmark when the Bookmark field holds something other than blank or "-1" (the sheet's "none set" sentinel). This is
+// the same rule the combat helper uses for Return, so the two tools agree.
+function getBookmark(c) {
+  const key = Object.keys(c).find(k => k.trim().toLowerCase() === 'bookmark');
+  const v = String(key ? c[key] : '').trim();
+  return (v && v !== '-1') ? v : '';
+}
 
 // ---------- Choosing a target ----------
 // An action takes a target when its description speaks of one. The Actions sheet is written that way: every attack, Heal, Cure, Sacrifice,
@@ -509,27 +545,25 @@ function buildCycleMessage(player, notes) {
   const prevLoc = player['Previous location'];
   const cycle = player['Cycle'] || '?';
 
-  // Order follows the agreed end goal: cycle, where you are, your status, the other people, enemies, the NPC / point of interest,
-  // bodies, messages, actions, inventory, win condition.
+  // The order of a message: the cycle, empty centre tags (the picture is added by hand), where you are (and whether you have moved), the
+  // region, the point of interest, your status conditions, the enemies, the other players, the bodies, the messages, the actions, the
+  // inventory, and the win condition.
   let msg = `It is [B]Cycle ${cycle}[/B].\n\n`;
-  msg += loc === prevLoc ? `You are at [B]${loc}[/B].\n\n` : `You have arrived at [B]${loc}[/B].\n\n`;
+  msg += '[CENTER][/CENTER]\n\n';
+  msg += loc === prevLoc ? `This is [B]${loc}[/B].\n\n` : `You have arrived at [B]${loc}[/B].\n\n`;
 
   const region = getRegionForLocation(loc);
   if (region) msg += `${region.description}\n\n`;
+
+  // The NPC / point of interest at this location (one at most: it is read from the location grid's centre tile)
+  const poi = getPOIForLocation(loc);
+  if (poi && poi.description) msg += `${poi.description}\n\n`;
 
   // Status conditions, if any
   const statuses = getActiveStatuses(player);
   if (statuses.length) {
     msg += 'Your status conditions:\n';
     statuses.forEach(s => { msg += `  - [B]${s.name}[/B]` + (s.description ? `: ${s.description}` : '') + '\n'; });
-    msg += '\n';
-  }
-
-  // Other players present
-  const othersHere = state.characters.filter(c => c !== player && !isEnemyRow(c) && c['Current location'] === loc && !isKO(c));
-  if (othersHere.length) {
-    msg += 'There are other people here:\n';
-    othersHere.forEach(o => { msg += `  - ${o['Name']}\n`; });
     msg += '\n';
   }
 
@@ -560,9 +594,13 @@ function buildCycleMessage(player, notes) {
     msg += '\n';
   }
 
-  // The NPC / point of interest at this location (one at most: it is read from the location grid's centre tile)
-  const poi = getPOIForLocation(loc);
-  if (poi && poi.description) msg += `${poi.description}\n\n`;
+  // Other players present
+  const othersHere = state.characters.filter(c => c !== player && !isEnemyRow(c) && c['Current location'] === loc && !isKO(c));
+  if (othersHere.length) {
+    msg += 'There are other people here:\n';
+    othersHere.forEach(o => { msg += `  - ${o['Name']}\n`; });
+    msg += '\n';
+  }
 
   // Corpses — derived live from Status=KO at this location (players and enemies alike),
   // never a separately maintained list, so it can't drift out of sync with combat results.
@@ -594,21 +632,28 @@ function buildCycleMessage(player, notes) {
 
   // Actions, in this order: what the player has EQUIPPED, what the setting gives them (a point of interest), what their inventory gives them
   // (only items that are not equipment: a weapon or trinket in the bag gives nothing until it is equipped), then the standard actions.
-  // A weapon's attack is only offered if there is something to fight (matches generateMessages.py's own logic); a worn trinket's or
-  // armour's action is always offered.
+  // Whether any of them is offered is decided by the action's Trigger (see above): an attack needs an enemy or another player there, so
+  // it is offered against allies when no enemies are present, and never when the player is alone.
   msg += '[B]Actions[/B]\n';
   const seen = new Set();
-  const addAction = (name, description, roll, row) => {
+  const leftOutNoGrids = [];   // actions that need a point of interest and could not be checked because no location grids are loaded
+  const addAction = (name, description, roll, row, prompt) => {
     if (!name || seen.has(name)) return;
+    if (!actionTriggerMet(row, player, poi)) {   // its Trigger is not met here (an attack with no one to attack, Pickpocket with no other player...)
+      if (triggerNeedsPlace(row) && !Object.keys(state.locations).length) leftOutNoGrids.push(name);
+      return;
+    }
     const targets = getTargetNames(player, row);
     if (isAttackRow(row) && !targets.length) return;   // an attack with nobody to hit is not offered (alone, you cannot attack yourself)
     seen.add(name);
     msg += `[${name}]` + (description ? ` - ${description}` : '') + (roll ? ` ${roll}` : '') + '\n';
-    // An action that takes a target is followed by the choice to make, naming everyone who can be picked
-    if (targets.length && actionNeedsTarget(description)) msg += `[I]Select a target: ${targets.join(', ')}[/I]\n`;
+    // An action that needs a choice is followed by it, in italics on the next line: a direction for Move and Flee, or a target, naming
+    // everyone who can be picked, for an action whose description speaks of one
+    if (prompt) msg += `[I]${prompt}[/I]\n`;
+    else if (targets.length && actionNeedsTarget(description)) msg += `[I]Select a target: ${targets.join(', ')}[/I]\n`;
   };
   const weaponAction = getGrantedAction(player['Equipped weapon']);
-  if (weaponAction && enemiesHere.length) addAction(weaponAction.name, weaponAction.description, weaponAction.roll, weaponAction.row);
+  if (weaponAction) addAction(weaponAction.name, weaponAction.description, weaponAction.roll, weaponAction.row);
   ['Equipped armour', 'Equipped trinket'].forEach(slot => {
     const worn = getGrantedAction(player[slot]);
     if (worn) addAction(worn.name, worn.description, worn.roll, worn.row);
@@ -618,14 +663,20 @@ function buildCycleMessage(player, notes) {
     const invAction = getGrantedAction(player[`Inventory slot ${i}`]);
     if (invAction && !isEquipmentItem(invAction.item)) addAction(invAction.name, invAction.description, invAction.roll, invAction.row);
   }
+  if (leftOutNoGrids.length) notes.push([...new Set(leftOutNoGrids)].join(', ') + ' ' + (new Set(leftOutNoGrids).size > 1 ? 'need' : 'needs') + ' a point of interest at this location, but no location grids are loaded, so ' + (new Set(leftOutNoGrids).size > 1 ? 'they are' : 'it is') + ' left out.');
   // The standard actions. With nothing to fight everyone has Manage Inventory, Rest, Post and Move; with enemies here there is only Flee,
   // which happens at the end of the turn. Directions are only those that exist from where the player stands. A defeated player has none.
   if (!isKO(player)) {
     if (!enemiesHere.length) {
       ['Manage Inventory', 'Rest', 'Post'].forEach(standard => { const row = findActionRow(standard); addAction(standard, row ? row.description : '', formatRoll(row), row); });
     }
+    const bookmark = getBookmark(player);
+    if (bookmark) {   // a marked location to go back to, so Return is available (peace or combat)
+      const returnRow = findActionRow('Return'); addAction('Return', returnRow ? returnRow.description : '', formatRoll(returnRow), returnRow);
+      if (!getMoveDirections(bookmark)) notes.push('Bookmark "' + bookmark + '" is not on the A1-H8 map. Return is still offered, as the combat helper would.');
+    }
     const directions = getMoveDirections(loc);
-    if (directions) msg += `[I]${enemiesHere.length ? FLEE_TEXT : MOVE_TEXT} (Select a direction: ${directions.join(', ')})[/I]\n`;
+    if (directions) addAction(enemiesHere.length ? 'Flee' : 'Move', enemiesHere.length ? FLEE_DESCRIPTION : MOVE_DESCRIPTION, '', null, 'Select a direction: ' + directions.join(', '));
     else notes.push('Location "' + loc + '" is not on the A1-H8 map, so no Move or Flee directions are given.');
   }
 
@@ -688,6 +739,12 @@ document.getElementById('generate-btn').addEventListener('click', () => {
     return;
   }
   body.innerHTML = '';
+  if (!Object.keys(state.locations).length) {   // once per run, and not part of any message: without grids there is no region line and no point of interest
+    const notice = document.createElement('div');
+    notice.className = 'card-warning'; notice.id = 'no-grids-notice';
+    notice.textContent = 'No location grids are loaded, so these messages have no region description and no point of interest. Upload the locations folder to include them.';
+    body.appendChild(notice);
+  }
   players.forEach(player => {
     const notes = [];
     const text = buildCycleMessage(player, notes);

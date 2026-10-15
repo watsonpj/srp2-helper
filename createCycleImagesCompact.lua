@@ -31,93 +31,83 @@ local playerSpritePath = "C:\\Users\\Admin\\Pictures\\aseprite\\lua testing\\out
 local disguiseItems = {}
 local disguiseSpriteName = "stranger"  -- PLACEHOLDER: the file name, without the direction, of the generic stranger sprite
 
--- Positions for player images based on direction, adjusted with new offsets
-local directionSlots = {
-    SE = {
-        {219 - 16, 142 - 44},
-        {237 - 16, 132 - 44},
-        {201 - 16, 152 - 44},
-        {201 - 16, 132 - 44},
-        {219 - 16, 122 - 44},
-        {183 - 16, 142 - 44}
-    },
-    SW = {
-        {291 - 16, 142 - 44},
-        {271 - 16, 132 - 44},
-        {309 - 16, 152 - 44},
-        {309 - 16, 132 - 44},
-        {291 - 16, 122 - 44},
-        {327 - 16, 142 - 44}
-    },
-    NE = {
-        {219 - 16, 181 - 44},
-        {237 - 16, 192 - 44},
-        {201 - 16, 171 - 44},
-        {201 - 16, 192 - 44},
-        {219 - 16, 202 - 44},
-        {183 - 16, 182 - 44}
-    },
-    NW = {
-        {291 - 16, 181 - 44},
-        {309 - 16, 171 - 44},
-        {273 - 16, 191 - 44},
-        {309 - 16, 191 - 44},
-        {326 - 16, 182 - 44},
-        {291 - 16, 202 - 44}
-    }
-}
+-- Players stand in the SAME place in every picture of a location: a player's side depends only on where THEY came from, never on who is
+-- looking. Enemies are the exception on purpose: they stand on the side OPPOSITE whoever's picture it is, and face them.
+-- (Before, a player who had not moved was re-rolled for every picture.)
+-- A player who has not moved has no side of their own. Stationary players are spread over the four sides, always the same way:
+-- each goes to the side with the fewest players so far, and ties go in this order.
+local stationaryDirectionOrder = {"SE", "NW", "SW", "NE"}
 
--- The same but for enemies, using the last three slots
-local directionEnemySlots = {
-    SE = {
-        {201 - 16, 132 - 44},
-        {219 - 16, 122 - 44},
-        {183 - 16, 142 - 44}
-    },
-    SW = {
-        {309 - 16, 132 - 44},
-        {291 - 16, 122 - 44},
-        {327 - 16, 142 - 44}
-    },
-    NE = {
-        {201 - 16, 192 - 44},
-        {219 - 16, 202 - 44},
-        {183 - 16, 182 - 44}
-    },
-    NW = {
-        {309 - 16, 191 - 44},
-        {326 - 16, 182 - 44},
-        {291 - 16, 202 - 44}
-    }
-}
+-- The centre tile is kept for an NPC or a point of interest. DUMMIED OUT: nothing yet says which location has one, so this list is empty.
+-- To try it: centreEntities["A1"] = "campfire" draws centre\campfire.png on the centre tile of every picture of A1.
+local centreEntities = {}
+local centreSpritePath = "C:\\Users\\Admin\\Pictures\\aseprite\\lua testing\\centre\\"  -- PLACEHOLDER: the folder those images would be in
 
--- The order the four direction layers are created in, which is also their stacking order (a layer created later sits in front).
--- Back to front means the slots higher up the picture (smaller y, further away) first, so nearer sprites overlap farther ones.
--- Worked out from the slot coordinates above, so it stays right if the slots are moved; ties go left to right.
--- With the current slots this comes out clockwise from the top left: SE, SW, NW, NE.
-local function getDirectionDrawOrder(slotTable)
-    local info = {}
-    for direction, slotList in pairs(slotTable) do
-        local sumX, sumY = 0, 0
-        for _, slot in ipairs(slotList) do
-            sumX = sumX + slot[1]
-            sumY = sumY + slot[2]
-        end
-        table.insert(info, {name = direction, x = sumX / #slotList, y = sumY / #slotList})
-    end
-    table.sort(info, function(a, b)
-        if a.y ~= b.y then return a.y < b.y end
-        if a.x ~= b.x then return a.x < b.x end
-        return a.name < b.name
-    end)
-    local order = {}
-    for _, entry in ipairs(info) do
-        table.insert(order, entry.name)
-    end
-    return order
+-- Diagnostic, leave off normally: draws small squares on every picture to show where things are placed.
+--   red = each player tile's draw point   magenta = each enemy tile's   white = the centre tile's   blue = the feet (+ 16, 44): every figure's feet are placed here
+--   yellow cross = the origin of each tile                cyan square = the centre of each tile if it is a 36 x 20 diamond (origin + 18, 10)
+--   (a tile's centre is also the next tile's origin, so most points show a cyan square with yellow arms)
+local drawPlacementMarkers = false
+
+--------------------------------------------------------------------------------------------------------------------------------
+-- Who stands where
+-- Every character stands on a TILE of the 7 x 7 grid, written (row, col): row 0 is the top tile, rows run down-left and columns run
+-- down-right, the same numbering the tiles are drawn with.
+--   players : the two outer rings, on the side they came from. Six tiles per side, filled in the order written here. The same in
+--             every picture, whoever is looking.
+--   enemies : the ring around the centre. Three tiles per side. They stand on the side OPPOSITE the player whose picture it is, and
+--             face that player, so they move from picture to picture.
+--   centre  : the tile (3, 3) is kept for an NPC or a point of interest (one per location).
+--   corpses : lying beneath everyone, in the same place in every picture: first on the 16 corner tiles nobody ever stands on, then on
+--             any free player tile, then anywhere else except the centre.
+-- The sides are named for the direction of travel, so SE is where players who travelled SE stand: the side they came FROM.
+--------------------------------------------------------------------------------------------------------------------------------
+local playerTiles = {
+    SE = { {3, 1}, {2, 1}, {4, 1}, {3, 0}, {2, 0}, {4, 0} },
+    SW = { {1, 3}, {1, 2}, {1, 4}, {0, 3}, {0, 2}, {0, 4} },
+    NE = { {5, 3}, {5, 4}, {5, 2}, {6, 3}, {6, 4}, {6, 2} },
+    NW = { {3, 5}, {2, 5}, {4, 5}, {3, 6}, {2, 6}, {4, 6} },
+}
+local enemyTiles = {
+    SE = { {3, 2}, {2, 2}, {4, 2} },
+    SW = { {2, 3}, {2, 2}, {2, 4} },
+    NE = { {4, 3}, {4, 4}, {4, 2} },
+    NW = { {3, 4}, {2, 4}, {4, 4} },
+}
+local centreTile = {3, 3}
+
+-- The point a figure standing on a tile is placed from: the tile's origin plus this offset. A tile's centre is its origin + (18, 10), so this
+-- is the centre of the tile, 1 pixel lower. (The old slot table held exactly these points, give or take a pixel, once it had subtracted
+-- the player sprite's size.) It is where a 32 x 44 player sprite's top-left goes; see placeStandingImage for everyone else.
+-- If figures ever seem to sit off their tiles, this is the one pair of numbers to change, and it moves every figure the same way.
+local slotOffsetX, slotOffsetY = 18, 11
+local function tilePoint(row, col)
+    return startX - row * offsetX + col * offsetX + slotOffsetX,
+           startY + row * offsetY + col * offsetY + slotOffsetY
 end
 
-local directionDrawOrder = getDirectionDrawOrder(directionSlots)
+-- Enemies face whoever's picture it is, which is the opposite of the way that viewer faces.
+local oppositeDirection = { SE = "NW", NW = "SE", NE = "SW", SW = "NE" }
+
+local enemiesPath = "C:\\Users\\Admin\\Pictures\\aseprite\\lua testing\\enemies\\"
+
+-- The tiles nobody ever stands on: the 16 corner tiles of the outer two rings (not a player tile, an enemy tile or the centre).
+-- Corpses go here first, so they lie in the same place in every picture and never under anyone.
+local cornerTiles = {}
+do
+    local used = { [centreTile[1] .. "," .. centreTile[2]] = true }
+    for _, tiles in pairs(playerTiles) do
+        for _, tile in ipairs(tiles) do used[tile[1] .. "," .. tile[2]] = true end
+    end
+    for _, tiles in pairs(enemyTiles) do
+        for _, tile in ipairs(tiles) do used[tile[1] .. "," .. tile[2]] = true end
+    end
+    for row = 0, gridWidth - 1 do
+        for col = 0, gridWidth - 1 do
+            if not used[row .. "," .. col] then table.insert(cornerTiles, {row, col}) end
+        end
+    end
+end
 
 -- Function to load images and their cels
 local function loadImage(path)
@@ -285,6 +275,21 @@ local function placeImageOnLayer(layer, imageCel, x, y)
     end
 end
 
+-- The player sprites are 32 x 44, and a tile's point (tilePoint, above) is where the TOP-LEFT of a player sprite goes for the player to
+-- stand on that tile. (The old slot table wrote every slot as "feet point - (16, 44)": the same thing, the other way round.) That only
+-- suits sprites of that size and alignment, so a differently sized enemy, corpse or centre figure drawn the same way lands off its tile by
+-- the difference. Instead every figure that stands on a tile is placed by its FEET: the bottom-centre of its image goes where a player's feet
+-- go, which is the tile's point + (16, 44). A 32 x 44 player lands exactly where it always did, and a sprite of any other size stands on
+-- the same spot. This assumes a sprite's feet are at the bottom-centre of its canvas; where some art's are not, nudge that kind below.
+local playerSpriteWidth, playerSpriteHeight = 32, 44
+local standingNudge = { Player = {0, 0}, Enemy = {0, 0}, Centre = {0, 0}, Corpse = {0, 0} }   -- {x, y} pixels, per kind of figure
+local function placeStandingImage(layer, imageCel, pointX, pointY, kind)
+    local nudge = standingNudge[kind] or {0, 0}
+    local feetX = pointX + math.floor(playerSpriteWidth / 2)
+    local feetY = pointY + playerSpriteHeight
+    placeImageOnLayer(layer, imageCel, feetX - math.floor(imageCel.width / 2) + nudge[1], feetY - imageCel.height + nudge[2])
+end
+
 -- Function to determine the direction a player travelled, from previous and current location.
 -- Seen on the minimap (the grid turned 45 degrees clockwise: letters run down-right, numbers run down-left):
 --     letter up   (A -> B) = SE        letter down   (B -> A) = NW
@@ -292,11 +297,11 @@ end
 -- The label is the way the character faces (it names the image file) and it picks the slot set. The slots sit on the side
 -- the character came from, so someone who travelled SE stands towards the upper left of the picture.
 -- Assumes moves go along a row or a column.
+-- Returns nil for a player who has not moved (or has no previous location): they have no direction of travel, so
+-- assignPlayerDirections() gives them a side. Nothing in this script is random.
 local function determineDirection(prevLocation, currLocation)
-    if prevLocation == currLocation then
-        -- If the player hasn't moved, pick a random direction for now
-        local directions = {"NW", "NE", "SW", "SE"}
-        return directions[math.random(#directions)]
+    if prevLocation == nil or prevLocation == "" or prevLocation == currLocation then
+        return nil
     end
 
     -- Determine the direction based on the movement from previous to current location
@@ -324,63 +329,28 @@ local function spriteNameFor(player, viewerName)
     return player.playerName
 end
 
--- Function to draw player image. `spriteName` is the player's name, or the stranger (see spriteNameFor).
-local function drawPlayerImage(spriteName, prevLocation, direction)
-    local playerImagePath = playerSpritePath .. spriteName .. " " .. direction .. ".png"
-    if not app.fs.isFile(playerImagePath) then
-        print("Player sprite not found, so not drawn: " .. playerImagePath)
-        return
-    end
-    local playerImage, playerImageCel = loadImage(playerImagePath)
-
-    -- Find and use an available slot
-    for slotIndex, slot in ipairs(slots[direction]) do
-        if not occupiedSlots[direction][slotIndex] then
-            local x, y = slot[1], slot[2]
-            placeImageOnLayer(directionLayers[direction], playerImageCel, x, y)
-            occupiedSlots[direction][slotIndex] = true
-            playerImage:close()
-            return
-        end
-    end
-
-    -- Close the player image if no slot is found
-    playerImage:close()
-end
-
--- Function to draw all players in a given location
--- Made global variables here; noting in case we need to revert
-local function drawPlayersAtLocation(newSprite, parentGroup, location, viewerName)
-    slots = {
-        SE = {table.unpack(directionSlots.SE)},
-        SW = {table.unpack(directionSlots.SW)},
-        NE = {table.unpack(directionSlots.NE)},
-        NW = {table.unpack(directionSlots.NW)}
-    }
-    occupiedSlots = {
-        SE = {},
-        SW = {},
-        NE = {},
-        NW = {}
-    }
-
-    -- Create a new layer for each direction
-    directionLayers = {}
-    -- (created back to front so that nearer characters are drawn over farther ones; see directionDrawOrder)
-    for _, direction in ipairs(directionDrawOrder) do
-        directionLayers[direction] = createNamedLayer(newSprite, parentGroup, "Direction " .. direction)
-    end
-
-    -- Draw players in the location
-    for _, player in ipairs(locationMap[location] or {}) do
-        local prevLocation = player.prevLocation
-        local direction = determineDirection(prevLocation, location)
-        drawPlayerImage(spriteNameFor(player, viewerName), prevLocation, direction)
-    end
-end
-
 -- Function to load text character images only when needed
 local missingGlyphs = {}  -- characters already reported, so each one is named once per run
+
+-- When a font image is missing, say what is actually in that folder, because the usual causes are a different folder, a file
+-- whose real name is "-.png.png" (Windows hides the .png), or a look-alike character in the file name.
+local function describeFontFolder(charImagePath)
+    local folder = charImagePath:match("^(.*)\\[^\\]*$")
+    local okDir, isDir = pcall(app.fs.isDirectory, folder)
+    if okDir and not isDir then
+        return " The font folder itself does not exist: " .. tostring(folder)
+    end
+    local okList, files = pcall(app.fs.listFiles, folder)
+    if not okList or type(files) ~= "table" then
+        return ""
+    end
+    local unusual = {}
+    for _, name in ipairs(files) do
+        if not name:match("^%w%.png$") then table.insert(unusual, name) end   -- anything but a plain letter or digit image
+    end
+    return " That folder holds " .. #files .. " files. Names that are not a plain letter or digit: " ..
+           (#unusual > 0 and ("\"" .. table.concat(unusual, "\", \"") .. "\"") or "none")
+end
 
 local function getTextImage(char)
     local charImagePath 
@@ -396,8 +366,13 @@ local function getTextImage(char)
     -- bonus into a positive-looking number.
     if not missingGlyphs[char] then
         missingGlyphs[char] = true
-        print("No font image for \"" .. char .. "\", so it is left out of the text: " .. charImagePath ..
-              (char == "-" and " (negative bonuses will be drawn WITHOUT their minus sign)" or ""))
+        -- (a byte that is only part of a multi-byte character is shown as ? so the console never gets invalid text)
+        local shown = (char:byte() >= 32 and char:byte() < 127) and char or "?"
+        local shownPath = charImagePath:sub(1, #charImagePath - #char - 4) .. shown .. ".png"   -- the path again, without the raw byte
+        print("No font image for \"" .. shown .. "\" (character code " .. string.format("%02X", char:byte()) .. "), so it is left out of the text: " ..
+              shownPath .. (char == "-" and " (negative bonuses will be drawn WITHOUT their minus sign)" or "") ..
+              (char:byte() > 126 and " (this is part of a non-ASCII character, such as a typographic minus sign; the sheet should use a plain hyphen)" or "") ..
+              describeFontFolder(charImagePath))
     end
     return nil, nil
 end
@@ -518,98 +493,6 @@ local function round(x)
     return math.floor(x + 0.5)  -- Adds 0.5 before flooring
 end
 
-local function determineOppositeDirection(currentLocation, previousLocation)
-    -- Your existing determineDirection function, modified to return the opposite
-    local direction = determineDirection(previousLocation, currentLocation)
-    local oppositeDirections = {
-        SE = "NW",
-        NW = "SE",
-        NE = "SW",
-        SW = "NE",
-        N = "S",
-        S = "N",
-        E = "W",
-        W = "E",
-        -- Add any other directions you use
-    }
-    return oppositeDirections[direction] or nil
-end
-
--- Draw the enemies standing at the viewer's location. `enemies` is a list of character-sheet rows, already filtered to
--- this location (living ones only), and `directionEnemy` is the direction they stand and face. Sprites are found by
--- Base Name, so "Wolf (2)" uses the Wolf images.
--- Placement is deliberately simple for now: the enemies take the reserved enemy slots for their direction, in sheet order.
--- Returns how many enemy slots are now taken, so that corpses can avoid them.
--- All slot handling is in this function so the placement pass can replace it.
-local function drawEnemiesAtLocation(newSprite, parentGroup, enemies, directionEnemy)
-    if #enemies == 0 or not directionEnemy then
-        return 0
-    end
-
-    local enemiesPath = "C:\\Users\\Admin\\Pictures\\aseprite\\lua testing\\enemies\\"
-
-    local slots = directionEnemySlots[directionEnemy]
-    if not slots then
-        print("Enemy slots not defined for direction: " .. directionEnemy)
-        return 0
-    end
-
-    local enemyDirectionLayer = createNamedLayer(newSprite, parentGroup, "Enemy Direction " .. directionEnemy)
-
-    for index, enemy in ipairs(enemies) do
-        if index > #slots then
-            print("No free enemy slot at " .. enemy["Current location"] .. " (" .. directionEnemy .. "): not drawing " .. enemy["Name"])
-        else
-            local spriteName = enemy["Base Name"]
-            if not spriteName or spriteName == "" then
-                spriteName = enemy["Name"]
-            end
-            local enemySpritePath = enemiesPath .. spriteName .. " " .. directionEnemy .. ".png"
-            if app.fs.isFile(enemySpritePath) then
-                local enemySprite, enemyCel = loadImage(enemySpritePath)
-                placeImageOnLayer(enemyDirectionLayer, enemyCel, slots[index][1], slots[index][2])
-                enemySprite:close()
-            else
-                print("Enemy sprite not found: " .. enemySpritePath)
-            end
-        end
-    end
-
-    return math.min(#enemies, #slots)
-end
-
--- Draw the corpses of defeated players: one generic sprite, once per corpse. (Enemy corpses are not drawn.)
--- Placement rule for now: the corpses lie where the enemies would stand. They take the enemy slots that no living enemy is
--- using first, then spill over into the free player slots (1 to 3) of the same quadrant. The placement pass may change this.
--- Slot numbers 4-6 are the enemy slots, because the enemy slots are player slots 4-6.
-local function drawCorpsesAtLocation(corpseLayer, corpseCount, direction, enemySlotsUsed, location)
-    if not corpseLayer or corpseCount == 0 or not direction then
-        return
-    end
-
-    local slotOrder = {4, 5, 6, 1, 2, 3}
-    local corpseSprite, corpseCel = loadImage(corpseSpritePath)
-    local drawn = 0
-
-    for _, slotNumber in ipairs(slotOrder) do
-        if drawn >= corpseCount then
-            break
-        end
-        local takenByEnemy = slotNumber >= 4 and (slotNumber - 3) <= enemySlotsUsed
-        local takenByPlayer = occupiedSlots[direction][slotNumber]
-        if not takenByEnemy and not takenByPlayer then
-            local slot = directionSlots[direction][slotNumber]
-            placeImageOnLayer(corpseLayer, corpseCel, slot[1], slot[2])
-            drawn = drawn + 1
-        end
-    end
-
-    corpseSprite:close()
-
-    if drawn < corpseCount then
-        print("No free slot for " .. (corpseCount - drawn) .. " corpse(s) at " .. location .. " (" .. direction .. "): not drawn")
-    end
-end
 
 --------------------------------------------------------------------------------------------------------------------------------------------------
 
@@ -659,6 +542,7 @@ local appearanceColumns = {
 }
 
 local spriteTrim = 8  -- pixels trimmed off the outer edge of each pose
+local lastPlayerSpriteSize = nil  -- "W x H" of the sprites just made, shown on the summary line
 
 local function trimText(s)
     return ((s or ""):gsub("^%s+", ""):gsub("%s+$", ""))
@@ -763,6 +647,7 @@ local function makePlayerSprite(player, missingArt)
     -- Split into the two poses, trimming the outer edge of each
     local half = math.floor(width / 2)
     local poseWidth = half - spriteTrim
+    lastPlayerSpriteSize = poseWidth .. " x " .. height
     local southWest = Image(poseWidth, height)
     local northEast = Image(poseWidth, height)
     for y = 0, height - 1 do
@@ -809,7 +694,7 @@ local function makeAllPlayerSprites(players, header)
     for _, player in ipairs(players) do
         if makePlayerSprite(player, missingArt) then made = made + 1 end
     end
-    print("Player sprites made: " .. made .. " of " .. #players)
+    print("Player sprites made: " .. made .. " of " .. #players .. (lastPlayerSpriteSize and (" (each " .. lastPlayerSpriteSize .. " pixels)") or ""))
 
     local files = {}
     for label in pairs(missingArt) do files[#files + 1] = label end
@@ -820,6 +705,73 @@ local function makeAllPlayerSprites(players, header)
             print("  " .. label .. "   <- " .. table.concat(missingArt[label], ", "))
         end
     end
+end
+
+-- Works out, once, which side every living player stands on. Someone who travelled takes the side their journey names (they stand
+-- on the side they came from). Someone who has not moved is spread across the sides: each goes to the side with the fewest
+-- players so far. This depends only on the sheet, never on who is looking, so every picture of a location is identical.
+local function assignPlayerDirections()
+    for location, list in pairs(locationMap) do
+        local counts = { SE = 0, SW = 0, NE = 0, NW = 0 }
+        for _, player in ipairs(list) do
+            player.direction = determineDirection(player.prevLocation, location)
+            if player.direction then counts[player.direction] = counts[player.direction] + 1 end
+        end
+        for _, player in ipairs(list) do
+            if not player.direction then
+                local best = stationaryDirectionOrder[1]
+                for _, direction in ipairs(stationaryDirectionOrder) do
+                    if counts[direction] < counts[best] then best = direction end
+                end
+                player.direction = best
+                counts[best] = counts[best] + 1
+            end
+        end
+    end
+end
+
+-- Diagnostic (drawPlacementMarkers): one layer of small squares showing where the script places things, so the picture can be
+-- checked against the tile art and the sprites without guessing. See the settings at the top for the colours.
+local function drawPlacementMarkerLayer(newSprite, parentGroup)
+    local layer = createNamedLayer(newSprite, parentGroup, "Placement markers")
+    local image = Image(newSprite.width, newSprite.height)
+    local function square(cx, cy, r, g, b)
+        local color = app.pixelColor.rgba(r, g, b, 255)
+        for dy = -1, 1 do
+            for dx = -1, 1 do image:putPixel(cx + dx, cy + dy, color) end
+        end
+    end
+    local function cross(cx, cy, r, g, b)
+        local color = app.pixelColor.rgba(r, g, b, 255)
+        for d = -2, 2 do
+            image:putPixel(cx + d, cy, color)
+            image:putPixel(cx, cy + d, color)
+        end
+    end
+    -- A tile's centre (origin + 18, 10) is also the origin of its neighbour one column along, so most points are both:
+    -- the origins are drawn first as crosses and the centres on top as squares, so a point that is both shows a square with arms.
+    for gridRow = 0, gridWidth - 1 do
+        for col = 0, gridWidth - 1 do
+            cross(startX - gridRow * offsetX + col * offsetX, startY + gridRow * offsetY + col * offsetY, 255, 220, 0)  -- yellow cross: the tile's origin
+        end
+    end
+    for gridRow = 0, gridWidth - 1 do
+        for col = 0, gridWidth - 1 do
+            square(startX - gridRow * offsetX + col * offsetX + offsetX, startY + gridRow * offsetY + col * offsetY + offsetY, 0, 255, 255)  -- cyan square: the centre
+        end
+    end
+    for _, direction in ipairs({"SE", "SW", "NE", "NW"}) do
+        for _, tile in ipairs(enemyTiles[direction]) do
+            local x, y = tilePoint(tile[1], tile[2]); square(x, y, 255, 0, 255)     -- magenta: an enemy tile's draw point
+        end
+        for _, tile in ipairs(playerTiles[direction]) do
+            local x, y = tilePoint(tile[1], tile[2])
+            square(x, y, 255, 0, 0)                                                  -- red: a player tile's draw point
+            square(x + 16, y + 44, 0, 128, 255)                                      -- blue: the feet: everyone's feet are placed here
+        end
+    end
+    local x, y = tilePoint(centreTile[1], centreTile[2]); square(x, y, 255, 255, 255)  -- white: the centre tile's draw point
+    newSprite:newCel(layer, 1, image, Point(0, 0))
 end
 
 -- Sort the rows into players and enemies, and group them by location.
@@ -864,12 +816,139 @@ if corpsesEnabled and not app.fs.isFile(corpseSpritePath) then
     corpsesEnabled = false
 end
 
+-- Decide, once, where everyone stands (the same in every picture)
+assignPlayerDirections()
+
 -- Make every living player's sprites before any picture is drawn, because each picture shows other players too
 if regeneratePlayerSprites then
     makeAllPlayerSprites(playerRows, sheetHeader)
 end
 
 --------------------------------------------------------------------------------------------------------------------------------
+
+-- A message that would repeat in every picture is only printed once per run.
+local reportedOnce = {}
+local function reportOnce(message)
+    if not reportedOnce[message] then
+        reportedOnce[message] = true
+        print(message)
+    end
+end
+
+-- Works out who stands where in a location, as a list of {kind, name, x, y, path}, plus the set of tiles the PLAYERS (and the centre)
+-- take. Players take the next free tile on their side in sheet order and enemies take their tiles in sheet order. Nothing about the
+-- players depends on who is looking, EXCEPT a disguised player's sprite; the enemies stand opposite the viewer, facing them.
+local function planCast(location, viewerName, viewerDirection)
+    local cast, taken = {}, {}
+    local function claim(row, col) taken[row .. "," .. col] = true end
+    claim(centreTile[1], centreTile[2])
+
+    local used = { SE = 0, SW = 0, NE = 0, NW = 0 }
+    for _, player in ipairs(locationMap[location] or {}) do
+        local direction = player.direction
+        used[direction] = used[direction] + 1
+        local tile = playerTiles[direction][used[direction]]
+        if tile then
+            claim(tile[1], tile[2])
+            local x, y = tilePoint(tile[1], tile[2])
+            table.insert(cast, { kind = "Player", name = player.playerName, x = x, y = y,
+                path = playerSpritePath .. spriteNameFor(player, viewerName) .. " " .. direction .. ".png",
+                missing = "Player sprite not found, so not drawn: " })
+        else
+            reportOnce("No free player slot at " .. location .. " (" .. direction .. "): not drawing " .. player.playerName)
+        end
+    end
+
+    -- Enemies stand on the side opposite the viewer (who stands on the side they came from, looking towards the centre) and face the
+    -- viewer. The side is named for the way it faces, so the same name gives both the tiles and the sprite.
+    local enemyDirection = oppositeDirection[viewerDirection or ""] or "NW"
+    for index, enemy in ipairs(enemiesAtLocation[location] or {}) do
+        local tile = enemyTiles[enemyDirection][index]
+        if tile then
+            local x, y = tilePoint(tile[1], tile[2])
+            local spriteName = enemy["Base Name"]
+            if not spriteName or spriteName == "" then
+                spriteName = enemy["Name"]
+            end
+            table.insert(cast, { kind = "Enemy", name = enemy["Name"], x = x, y = y,
+                path = enemiesPath .. spriteName .. " " .. enemyDirection .. ".png",
+                missing = "Enemy sprite not found: " })
+        else
+            reportOnce("No free enemy slot at " .. location .. ": not drawing " .. enemy["Name"])
+        end
+    end
+
+    local centreName = centreEntities[location]
+    if centreName and centreName ~= "" then
+        local x, y = tilePoint(centreTile[1], centreTile[2])
+        table.insert(cast, { kind = "Centre", name = centreName, x = x, y = y,
+            path = centreSpritePath .. centreName .. ".png", missing = "Centre sprite not found: " })
+    end
+    return cast, taken
+end
+
+-- Draws everyone on a layer of their own, back to front: whoever is lower in the picture (larger y) is nearer, so is drawn later and
+-- sits in front. Ties go left to right, so the order never depends on anything but the positions.
+local function drawCast(newSprite, parentGroup, cast)
+    table.sort(cast, function(a, b)
+        if a.y ~= b.y then return a.y < b.y end
+        if a.x ~= b.x then return a.x < b.x end
+        if a.kind ~= b.kind then return a.kind < b.kind end
+        return a.name < b.name
+    end)
+    for _, member in ipairs(cast) do
+        if app.fs.isFile(member.path) then
+            local image, imageCel = loadImage(member.path)
+            local layer = createNamedLayer(newSprite, parentGroup, member.kind .. ": " .. member.name)
+            placeStandingImage(layer, imageCel, member.x, member.y, member.kind)
+            image:close()
+        else
+            print(member.missing .. member.path)
+        end
+    end
+end
+
+-- Corpses of defeated players: one generic sprite, once per corpse, on a layer of its own that is created first so that it lies beneath
+-- everyone standing. Where they lie must not depend on who is looking, and the enemies move with the viewer, so corpses ignore the
+-- enemies: they take the 16 corner tiles nobody stands on first, then any free player tile, then any other tile except the centre.
+-- (Only in that last case could an enemy stand over one. Enemy corpses are not drawn.)
+local function drawCorpses(newSprite, parentGroup, location, taken)
+    local corpses = corpsesAtLocation[location] or {}
+    if not corpsesEnabled or #corpses == 0 then
+        return
+    end
+    local candidates, seen = {}, {}
+    local function consider(row, col)
+        local key = row .. "," .. col
+        if not taken[key] and not seen[key] then
+            seen[key] = true
+            table.insert(candidates, {row, col})
+        end
+    end
+    for _, tile in ipairs(cornerTiles) do consider(tile[1], tile[2]) end
+    for _, direction in ipairs({"SE", "SW", "NE", "NW"}) do
+        for _, tile in ipairs(playerTiles[direction]) do consider(tile[1], tile[2]) end
+    end
+    for row = 0, gridWidth - 1 do
+        for col = 0, gridWidth - 1 do consider(row, col) end
+    end
+
+    local layer = createNamedLayer(newSprite, parentGroup, "Corpses")
+    local corpseSprite, corpseCel = loadImage(corpseSpritePath)
+    local drawn = 0
+    for _, tile in ipairs(candidates) do
+        if drawn >= #corpses then
+            break
+        end
+        local x, y = tilePoint(tile[1], tile[2])
+        placeStandingImage(layer, corpseCel, x, y, "Corpse")
+        drawn = drawn + 1
+    end
+    corpseSprite:close()
+    if drawn < #corpses then
+        reportOnce("No free tile for " .. (#corpses - drawn) .. " corpse(s) at " .. location .. ": not drawn")
+    end
+end
 
 -- Iterate over the players and generate images based on their current location
 for _, playerRow in ipairs(playerRows) do
@@ -951,30 +1030,17 @@ for _, playerRow in ipairs(playerRows) do
         end
     end
 
-    -- Corpses of defeated players here. Their layer is created first so that they sit behind everyone who is standing.
-    local corpses = corpsesAtLocation[currentLocation] or {}
-    local corpseLayer = nil
-    if corpsesEnabled and #corpses > 0 then
-        corpseLayer = createNamedLayer(newSprite, parentGroup, "Corpses")
+    -- Who stands where is the same in every picture of this location. Only the way the enemies face depends on whose picture it is:
+    -- they face this player, who stands on the side the player came from and looks towards the centre.
+    local viewerDirection = nil
+    for _, member in ipairs(locationMap[currentLocation] or {}) do
+        if member.playerName == playerName then
+            viewerDirection = member.direction
+        end
     end
-
-    -- Add player images for the current location
-    drawPlayersAtLocation(newSprite, parentGroup, currentLocation, playerName)
-
-    --------------------------------------------------------------------------------------------------------------------------------
-    -- Draw enemies: the Enemy rows of the character sheet that are at this location. Sprites come from \enemies\ by Base Name.
-    -- The corpses are laid out with them (see drawCorpsesAtLocation), so which way they face is worked out once for both.
-    --------------------------------------------------------------------------------------------------------------------------------
-
-    local enemies = enemiesAtLocation[currentLocation] or {}
-    local enemyDirection = nil
-    if #enemies > 0 or corpseLayer then
-        enemyDirection = determineOppositeDirection(currentLocation, previousLocation)
-    end
-    local enemySlotsUsed = drawEnemiesAtLocation(newSprite, parentGroup, enemies, enemyDirection)
-    drawCorpsesAtLocation(corpseLayer, #corpses, enemyDirection, enemySlotsUsed, currentLocation)
-
-    --------------------------------------------------------------------------------------------------------------------------------
+    local cast, taken = planCast(currentLocation, playerName, viewerDirection)
+    drawCorpses(newSprite, parentGroup, currentLocation, taken)  -- first, so that they lie beneath everyone standing
+    drawCast(newSprite, parentGroup, cast)                       -- back to front
 
     -- Add UI image layer
     local uiLayer = newSprite:newLayer()
@@ -1236,6 +1302,10 @@ for _, playerRow in ipairs(playerRows) do
 
     -- Save the new sprite as a .ase file
     local outputFilename = "C:\\Users\\Admin\\Pictures\\aseprite\\lua testing\\cycle images\\" .. playerName .. " " .. currentLocation .. ".ase"
+    if drawPlacementMarkers then
+        drawPlacementMarkerLayer(newSprite, parentGroup)
+    end
+
     newSprite:saveAs(outputFilename)
 
     -- Close all cached images
